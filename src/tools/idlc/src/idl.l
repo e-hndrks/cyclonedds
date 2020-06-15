@@ -198,7 +198,7 @@ identifier                [a-zA-Z_][a-zA-Z0-9_]*
 
 <INITIAL,NO_WS>{integer_literal} {
                             BEGIN(INITIAL);
-                            yylval->literal.flags = DDSTS_ULONGLONG;
+                            yylval->literal.flags = DDSTS_INT64 | DDSTS_UNSIGNED;
                             /* strtoll recognizes if the value is dec, oct or hex if base is zero */
                             dds_return_t retcode = ddsrt_strtoull(yytext, NULL, 0, &yylval->literal.value.ullng);
                             if (retcode != DDS_RETCODE_OK) {
