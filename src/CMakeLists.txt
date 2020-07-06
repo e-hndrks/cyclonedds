@@ -17,6 +17,7 @@ if(NOT ${PROJECT_NAME} STREQUAL "CycloneDDS")
 endif()
 
 add_subdirectory(ddsrt)
+add_subdirectory(idl)
 
 # some of the tests in the core rely on preprocessing IDL, so idlc has to
 # come first
