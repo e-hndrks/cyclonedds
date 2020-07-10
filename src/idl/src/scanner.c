@@ -605,6 +605,7 @@ idl_scan(idl_processor_t *proc, idl_token_t *tok)
       return code;
     default:
       /* tokenize. sanitize by removing line continuation, etc */
+      fprintf(stderr, "lexed: %.*s\n", lex.limit - lex.marker, lex.marker);
       if ((code = tokenize(proc, &lex, code, tok)) == IDL_RETCODE_NO_MEMORY) {
         /* revert state on memory allocation failure */
         proc->scanner.position = lex.location.first;

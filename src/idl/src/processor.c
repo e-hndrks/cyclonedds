@@ -47,13 +47,14 @@ void idl_processor_fini(idl_processor_t *proc)
 #endif
     if (proc->directive) {
       if (proc->directive->type == IDL_KEYLIST) {
-        idl_keylist_t *dir = (idl_keylist_t *)proc->directive;
-        if (dir->data_type)
-          free(dir->data_type);
-        for (char **keys = dir->keys; keys && *keys; keys++)
-          free(*keys);
-        if (dir->keys)
-          free(dir->keys);
+        // FIXME: free memory
+        //idl_keylist_t *dir = (idl_keylist_t *)proc->directive;
+        //if (dir->data_type)
+        //  free(dir->data_type);
+        //for (char **keys = dir->keys; keys && *keys; keys++)
+        //  free(*keys);
+        //if (dir->keys)
+        //  free(dir->keys);
       }
       free(proc->directive);
     }
@@ -181,6 +182,7 @@ int32_t idl_parse(idl_processor_t *proc)
   do {
     if ((code = idl_scan(proc, &tok)) < 0)
       break;
+    fprintf(stderr, "token: %d\n", code);
     if ((int)proc->state & (int)IDL_SCAN_DIRECTIVE)
       code = idl_parse_directive(proc, &tok);
     else if (code != '\n')
