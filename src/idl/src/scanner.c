@@ -20,6 +20,7 @@
 #include "idl/processor.h"
 #include "idl/parser.h" /* Bison tokens */
 #include "scanner.h"
+#include "idl/string_utils.h"
 
 /* treat every cr+lf, lf+cr, cr, lf sequence as a single newline */
 static int32_t
@@ -578,7 +579,7 @@ tokenize(
     case IDL_TOKEN_PP_NUMBER:
     case IDL_TOKEN_STRING_LITERAL:
     case IDL_TOKEN_CHAR_LITERAL:
-      if (str == buf && !(str = strdup(str)))
+      if (str == buf && !(str = idl_strdup(str)))
         return IDL_RETCODE_NO_MEMORY;
       tok->value.str = str;
       break;

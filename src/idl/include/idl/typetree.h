@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "idl/retcode.h"
+#include "idl/export.h"
 
 // * generate a parse tree (not a tree consisting only of types)
 // * tree is constructed of "abstract" nodes
@@ -85,6 +86,16 @@
 #define IDL_WCHAR (IDL_BASE_TYPE | 2u)
 #define IDL_BOOL (IDL_BASE_TYPE | 3u)
 #define IDL_OCTET (IDL_BASE_TYPE | 4u)
+
+#define IDL_BASE_TYPE_CATEGORY (IDL_BASE_TYPE | 0x30)
+#define IDL_BASE_INTEGER_MASK (IDL_INTEGER_TYPE | 0x0e | IDL_FLAG_UNSIGNED)
+#define IDL_BASE_INTEGER_MASK_IGNORE_SIGN (IDL_INTEGER_TYPE | 0x0e)
+#define IDL_BASE_FLOAT_MASK (IDL_FLOATING_PT_TYPE | 0x0f)
+#define IDL_BASE_SIMULTANEOUS_MASK (IDL_BASE_TYPE | 0x0f)
+
+#define IDL_TEMPL_TYPE_MASK (0x0f)
+#define IDL_CONSTR_TYPE_MASK (0x0f)
+#define IDL_CATEGORY_MASK (IDL_BASE_TYPE | IDL_TEMPL_TYPE | IDL_CONSTR_TYPE | IDL_SCOPED_NAME)
 
 
 /** @private */
@@ -161,12 +172,12 @@ typedef idl_retcode_t(*idl_visit_t)(idl_node_t *, void *user_data);
 #define IDL_VISIT_RECURSE (1u<<0)
 #define IDL_VISIT_FOLLOW (1u<<1)
 
-idl_retcode_t
-idl_walk(
-  idl_node_t *root,
-  uint32_t flags,
-  idl_visit_t function,
-  uint32_t filter,
-  void *user_data);
+//idl_retcode_t
+//idl_walk(
+//  idl_node_t *root,
+//  uint32_t flags,
+//  idl_visit_t function,
+//  uint32_t filter,
+//  void *user_data);
 
 #endif /* IDL_TYPETREE_H */

@@ -16,7 +16,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <strings.h>
+#include <ctype.h>
+#include <idl/string_utils.h>
 
 #if defined(__GNUC__)
 _Pragma("GCC diagnostic push")
@@ -278,12 +279,12 @@ scoped_name:
     identifier
       { $$ = $1; }
   | scope identifier
-      { if (asprintf(&$$, "::%s", $2) == -1)
+      { if (idl_asprintf(&$$, "::%s", $2) == -1)
           EXHAUSTED;
         free($2);
       }
   | scoped_name scope identifier
-      { if (asprintf(&$$, "%s::%s", $1, $3) == -1)
+      { if (idl_asprintf(&$$, "%s::%s", $1, $3) == -1)
           EXHAUSTED;
         free($1);
         free($3);
@@ -708,7 +709,7 @@ identifier:
           off = 1;
         else if (idl_iskeyword(proc, $1, 1))
           ABORT(proc, &@1, "identifier '%s' collides with a keyword", $1);
-        if (!($$ = strdup(&$1[off])))
+        if (!($$ = idl_strdup(&$1[off])))
           EXHAUSTED;
       }
   ;
@@ -825,7 +826,7 @@ int32_t idl_iskeyword(idl_processor_t *proc, const char *str, int nc)
 
   assert(str != NULL);
 
-  cmp = (nc ? &strncasecmp : strncmp);
+  cmp = (nc ? &idl_strncasecmp : strncmp);
 
   for (size_t i = 0, n = strlen(str); i < YYNTOKENS && !toknum; i++) {
     if (yytname[i] != 0

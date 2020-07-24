@@ -12,7 +12,6 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
-#include <getopt.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -21,6 +20,7 @@
 
 #include "idl/typetree.h"
 #include "idl/processor.h"
+#include "idl/string_utils.h"
 
 #include "mcpp_lib.h"
 #include "mcpp_out.h"
@@ -165,7 +165,7 @@ static int idlc_printf(OUTDEST od, const char *fmt, ...)
   assert(fmt != NULL);
 
   va_start(ap, fmt);
-  if ((len = vasprintf(&str, fmt, ap)) < 0) { /* FIXME: optimize */
+  if ((len = idl_vasprintf(&str, fmt, ap)) < 0) { /* FIXME: optimize */
     retcode = IDL_RETCODE_NO_MEMORY;
     return -1;
   }
@@ -341,15 +341,15 @@ int main(int argc, char *argv[])
             preprocessed output */
 
   /* parse command line options */
-  while ((opt = getopt(argc, argv, "Cd:D:EhI:l:Sv")) != -1) {
+  while ((opt = idl_getopt(argc, argv, "Cd:D:EhI:l:Sv")) != -1) {
     switch (opt) {
       case 'd':
         {
           char *tok, *str = optarg;
-          while ((tok = strsep(&str, ",")) != NULL) {
-            if (strcasecmp(tok, "preprocessor") == 0) {
+          while ((tok = idl_strsep(&str, ",")) != NULL) {
+            if (idl_strcasecmp(tok, "preprocessor") == 0) {
               opts.flags |= IDLC_DEBUG_PREPROCESSOR;
-            } else if (strcasecmp(tok, "parser") == 0) {
+            } else if (idl_strcasecmp(tok, "parser") == 0) {
               opts.flags |= IDLC_DEBUG_PROCESSOR;
             }
           }
@@ -397,7 +397,7 @@ int main(int argc, char *argv[])
 
   if ((ret = idlc_parse(&tree)) == 0 && (opts.flags & IDLC_COMPILE)) {
     //assert(root != NULL);
-    assert(strcasecmp(opts.lang, "c") == 0);
+    assert(idl_strcasecmp(opts.lang, "c") == 0);
     //ddsts_generate_C99(opts.file, root);
     //ddsts_free_type(root);
   }
