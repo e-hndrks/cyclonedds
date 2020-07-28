@@ -30,6 +30,7 @@ add_library(
     src/backend.c
     src/backendCpp11.c
     src/string_utils.c
+    src/streamer_generator.c
     ${BISON_parser_OUTPUT_SOURCE})
 
 generate_export_header(idl EXPORT_FILE_NAME include/idl/export.h)
@@ -54,6 +55,9 @@ install(
     "${BISON_parser_OUTPUT_HEADER}"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/idl"
   COMPONENT dev)
+
+add_executable(idl_stream_tester src/idl_stream_tester.c)
+target_link_libraries(idl_stream_tester PRIVATE idl)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
