@@ -58,4 +58,8 @@ IDL_EXPORT idl_getopt(
   char **argv,
   const char *opts);
 
+char
+IDL_EXPORT *get_cpp11_name(
+  const char* name);
+
 #endif /* STRING_UTILS_H */

@@ -13,7 +13,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "idl/processor.h"
 #include "idl/backend.h"
@@ -21,26 +25,26 @@
 #include "CUnit/Theory.h"
 
 #define IDL_INPUT(struct_name,member_type,member_name) ""\
-"struct "##struct_name##" {\n"\
-"    "##member_type##" "##member_name";"\
+"struct "struct_name" {\n"\
+"    "member_type" "member_name";"\
 "};"
 
 #define IDL_OUTPUT(struct_name,member_type,default_value,member_name) ""\
-"class "##struct_name##" {\n"\
+"class "struct_name" {\n"\
 "private:\n"\
-"  "##member_type##" "##member_name##"_;\n"\
+"  "member_type" "member_name"_;\n"\
 "\n"\
 "public:\n"\
-"  "##struct_name##"() :\n"\
-"      "##member_name##"_("##default_value##") {}\n"\
+"  "struct_name"() :\n"\
+"      "member_name"_("default_value") {}\n"\
 "\n"\
-"  explicit "##struct_name##"(\n"\
-"      "member_type##" "##member_name##") :\n"\
-"          "##member_name##"_("##member_name##") {}\n"\
+"  explicit "struct_name"(\n"\
+"      "member_type" "member_name") :\n"\
+"          "member_name"_("member_name") {}\n"\
 "\n"\
-"  "##member_type##" "##member_name##"() const { return this->"##member_name##"_; }\n"\
-"  "##member_type##"& "##member_name##"() { return this->"##member_name##"_; }\n"\
-"  void "##member_name##"("##member_type##" _val_) { this->"##member_name##"_ = _val_; }\n"\
+"  "member_type" "member_name"() const { return this->"member_name"_; }\n"\
+"  "member_type"& "member_name"() { return this->"member_name"_; }\n"\
+"  void "member_name"("member_type" _val_) { this->"member_name"_ = _val_; }\n"\
 "};\n"
 
 static char mem_buf[4096];
@@ -117,7 +121,12 @@ CU_Theory((const char *input, const char *output), idl_backend, cpp11, .timeout 
 #if 0
   if (initial_run) {
     printf("Sleeping for 8 seconds. Please attach debugger...\n");
+#ifdef _WIN32
     Sleep(8000);
+#else
+    sleep(8);
+#endif
+
     initial_run = false;
   }
 #endif

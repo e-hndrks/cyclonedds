@@ -24,7 +24,7 @@
 #else
 #define NULL_DEVICE "/dev/null"
 #define SET_BUFFER(file,buf,size) setbuffer(file, buf, size)
-#define FOPEN(file,file_name,mode) file = fopen(file_name, mode)
+#define FOPEN(file,file_name,mode) *file = fopen(file_name, mode)
 #endif
 
 static const char *indent_buffer = { "                                                                " };
