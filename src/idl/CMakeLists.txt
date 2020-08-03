@@ -27,10 +27,7 @@ add_library(
     src/directive.c
     src/processor.c
     src/typetree.c
-    src/backend.c
-    src/backendCpp11.c
     src/string_utils.c
-    src/streamer_generator.c
     ${BISON_parser_OUTPUT_SOURCE})
 
 generate_export_header(idl EXPORT_FILE_NAME include/idl/export.h)
@@ -43,10 +40,13 @@ target_include_directories(
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>")
 
+target_include_directories(idl INTERFACE $<INSTALL_INTERFACE:include>)
+
 install(
   DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/idl"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-  COMPONENT dev)
+  COMPONENT dev
+  FILES_MATCHING PATTERN "*.h")
 
 install(
   FILES
@@ -56,8 +56,13 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/idl"
   COMPONENT dev)
 
-add_executable(idl_stream_tester src/idl_stream_tester.c)
-target_link_libraries(idl_stream_tester PRIVATE idl)
+install(
+  TARGETS idl
+  EXPORT "${CMAKE_PROJECT_NAME}"
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT lib
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT lib
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT lib
+)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
