@@ -10,13 +10,13 @@
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
 #include <assert.h>
+#include <limits.h>
 
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "Space.h"
-#include "RoundTrip.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -55,7 +55,7 @@
 #define MAX_SAMPLES                 21
 
 #define RDR_NOT_READ_CNT            11
-#define RDR_INV_READ_CNT             1
+#define RDR_INV_READ_CNT             2
 int rdr_expected_long_2[RDR_NOT_READ_CNT] = { 0, 1, 2, 6, 7, 9, 11, 13, 14, 16, 19 };
 
 /* Because we only read one sample at a time, only the first sample of an instance
@@ -80,16 +80,6 @@ static void*              g_loans[MAX_SAMPLES];
 static void*              g_samples[MAX_SAMPLES];
 static Space_Type1        g_data[MAX_SAMPLES];
 static dds_sample_info_t  g_info[MAX_SAMPLES];
-
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
 
 static bool
 filter_init(const void * sample)
@@ -138,7 +128,7 @@ reader_iterator_init(void)
     g_waitset = dds_create_waitset(g_participant);
     CU_ASSERT_FATAL(g_waitset > 0);
 
-    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_topic_name("ddsc_read_iterator_test", name, sizeof name), NULL, NULL);
+    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_unique_topic_name("ddsc_read_iterator_test", name, sizeof name), NULL, NULL);
     CU_ASSERT_FATAL(g_topic > 0);
 
     /* Create a writer that will not automatically dispose unregistered samples. */
@@ -354,15 +344,14 @@ CU_Test(ddsc_read_next, reader, .init=reader_iterator_init, .fini=reader_iterato
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_next, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read_next, invalid_readers, .init=reader_iterator_init, .fini=reader_iterator_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read_next(rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -374,7 +363,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_next, non_readers, .init=reader_iterato
 {
     dds_return_t ret;
     ret = dds_read_next(*rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -388,7 +377,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_next, already_deleted, .init=reader_ite
     ret = dds_delete(*rdr);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     ret = dds_read_next(*rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 /*************************************************************************************************/
@@ -403,7 +392,7 @@ CU_Theory((void **buf, dds_sample_info_t *si), ddsc_read_next, invalid_buffers, 
     dds_return_t ret;
     if ((buf != g_samples || si != g_info) && (buf != g_loans)) {
         ret = dds_read_next(g_reader, buf, si);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -458,7 +447,8 @@ CU_Test(ddsc_read_next_wl, reader, .init=reader_iterator_init, .fini=reader_iter
     CU_ASSERT_EQUAL_FATAL(cnt, RDR_NOT_READ_CNT);
     CU_ASSERT_EQUAL_FATAL(cntinv, RDR_INV_READ_CNT);
 
-    ret = dds_return_loan(g_reader, g_loans, ret);
+    /* return_loan 3rd arg should be in [highest count ever returned, read limit] */
+    ret = dds_return_loan(g_reader, g_loans, 1);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 
     /* All samples should still be available. */
@@ -470,15 +460,14 @@ CU_Test(ddsc_read_next_wl, reader, .init=reader_iterator_init, .fini=reader_iter
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_next_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read_next_wl, invalid_readers, .init=reader_iterator_init, .fini=reader_iterator_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read_next_wl(rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -490,7 +479,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_next_wl, non_readers, .init=reader_iter
 {
     dds_return_t ret;
     ret = dds_read_next_wl(*rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -504,7 +493,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_next_wl, already_deleted, .init=reader_
     ret = dds_delete(*rdr);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     ret = dds_read_next_wl(*rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 /*************************************************************************************************/
@@ -519,7 +508,7 @@ CU_Theory((void **buf, dds_sample_info_t *si), ddsc_read_next_wl, invalid_buffer
     dds_return_t ret;
     if (buf != g_loans || si != g_info) {
         ret = dds_read_next_wl(g_reader, buf, si);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -580,15 +569,14 @@ CU_Test(ddsc_take_next, reader, .init=reader_iterator_init, .fini=reader_iterato
 }
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_next, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take_next, invalid_readers, .init=reader_iterator_init, .fini=reader_iterator_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take_next(rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -600,7 +588,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_next, non_readers, .init=reader_iterato
 {
     dds_return_t ret;
     ret = dds_take_next(*rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -614,7 +602,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_next, already_deleted, .init=reader_ite
     ret = dds_delete(*rdr);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     ret = dds_take_next(*rdr, g_samples, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 /*************************************************************************************************/
@@ -629,7 +617,7 @@ CU_Theory((void **buf, dds_sample_info_t *si), ddsc_take_next, invalid_buffers, 
     dds_return_t ret;
     if ((buf != g_samples || si != g_info) && (buf != g_loans)) {
         ret = dds_take_next(g_reader, buf, si);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -684,7 +672,8 @@ CU_Test(ddsc_take_next_wl, reader, .init=reader_iterator_init, .fini=reader_iter
     CU_ASSERT_EQUAL_FATAL(cnt, RDR_NOT_READ_CNT);
     CU_ASSERT_EQUAL_FATAL(cntinv, RDR_INV_READ_CNT);
 
-    ret = dds_return_loan(g_reader, g_loans, ret);
+    /* return_loan 3rd arg should be in [highest count ever returned, read limit] */
+    ret = dds_return_loan(g_reader, g_loans, 1);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 
     /* All samples should still be available. */
@@ -693,15 +682,14 @@ CU_Test(ddsc_take_next_wl, reader, .init=reader_iterator_init, .fini=reader_iter
 }
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_next_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take_next_wl, invalid_readers, .init=reader_iterator_init, .fini=reader_iterator_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take_next_wl(rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -713,7 +701,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_next_wl, non_readers, .init=reader_iter
 {
     dds_return_t ret;
     ret = dds_take_next_wl(*rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -727,7 +715,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_next_wl, already_deleted, .init=reader_
     ret = dds_delete(*rdr);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     ret = dds_take_next_wl(*rdr, g_loans, g_info);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -741,7 +729,7 @@ CU_Theory((void **buf, dds_sample_info_t *si), ddsc_take_next_wl, invalid_buffer
     dds_return_t ret;
     if (buf != g_loans || si != g_info) {
         ret = dds_take_next_wl(g_reader, buf, si);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }

@@ -13,13 +13,14 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "os/os.h"
-#include "ddsi/ddsi_serdata.h"
-#include "ddsi/q_unused.h"
-#include "ddsi/q_config.h"
-#include "ddsi/q_ephash.h"
-#include "ddsi/q_entity.h"
-#include "ddsi/ddsi_tkmap.h"
+#include "dds/ddsrt/heap.h"
+#include "dds/ddsi/ddsi_serdata.h"
+#include "dds/ddsi/q_unused.h"
+#include "dds/ddsi/q_config.h"
+#include "dds/ddsi/ddsi_entity_index.h"
+#include "dds/ddsi/q_entity.h"
+#include "dds/ddsi/ddsi_domaingv.h"
+#include "dds/ddsi/ddsi_tkmap.h"
 #include "dds__serdata_builtintopic.h"
 #include "dds__whc_builtintopic.h"
 #include "dds__builtin.h"
@@ -27,6 +28,7 @@
 struct bwhc {
   struct whc common;
   enum ddsi_sertopic_builtintopic_type type;
+  const struct entity_index *entidx;
 };
 
 enum bwhc_iter_state {
@@ -40,17 +42,15 @@ struct bwhc_iter {
   struct whc_sample_iter_base c;
   enum bwhc_iter_state st;
   bool have_sample;
-  struct ephash_enum it;
+  struct entidx_enum it;
 };
 
 /* check that our definition of whc_sample_iter fits in the type that callers allocate */
-struct bwhc_sample_iter_sizecheck {
-  char fits_in_generic_type[sizeof(struct bwhc_iter) <= sizeof(struct whc_sample_iter) ? 1 : -1];
-};
+DDSRT_STATIC_ASSERT (sizeof (struct bwhc_iter) <= sizeof (struct whc_sample_iter));
 
 static void bwhc_free (struct whc *whc_generic)
 {
-  os_free (whc_generic);
+  ddsrt_free (whc_generic);
 }
 
 static void bwhc_sample_iter_init (const struct whc *whc_generic, struct whc_sample_iter *opaque_it)
@@ -64,7 +64,7 @@ static void bwhc_sample_iter_init (const struct whc *whc_generic, struct whc_sam
 static bool is_visible (const struct entity_common *e)
 {
   const nn_vendorid_t vendorid = get_entity_vendorid (e);
-  return ddsi_plugin.builtintopic_is_visible (e->guid.entityid, e->onlylocal, vendorid);
+  return builtintopic_is_visible (e->gv->builtin_topic_interface, &e->guid, vendorid);
 }
 
 static bool bwhc_sample_iter_borrow_next (struct whc_sample_iter *opaque_it, struct whc_borrowed_sample *sample)
@@ -92,11 +92,11 @@ static bool bwhc_sample_iter_borrow_next (struct whc_sample_iter *opaque_it, str
         case DSBT_READER:      kind = EK_READER; break;
       }
       assert (whc->type == DSBT_PARTICIPANT || kind != EK_PARTICIPANT);
-      ephash_enum_init (&it->it, kind);
+      entidx_enum_init (&it->it, whc->entidx, kind);
       it->st = BIS_LOCAL;
       /* FALLS THROUGH */
     case BIS_LOCAL:
-      while ((entity = ephash_enum_next (&it->it)) != NULL)
+      while ((entity = entidx_enum_next (&it->it)) != NULL)
         if (is_visible (entity))
           break;
       if (entity) {
@@ -104,7 +104,7 @@ static bool bwhc_sample_iter_borrow_next (struct whc_sample_iter *opaque_it, str
         it->have_sample = true;
         return true;
       } else {
-        ephash_enum_fini (&it->it);
+        entidx_enum_fini (&it->it);
         it->st = BIS_INIT_PROXY;
       }
       /* FALLS THROUGH */
@@ -115,11 +115,11 @@ static bool bwhc_sample_iter_borrow_next (struct whc_sample_iter *opaque_it, str
         case DSBT_READER:      kind = EK_PROXY_READER; break;
       }
       assert (kind != EK_PARTICIPANT);
-      ephash_enum_init (&it->it, kind);
+      entidx_enum_init (&it->it, whc->entidx, kind);
       it->st = BIS_PROXY;
       /* FALLS THROUGH */
     case BIS_PROXY:
-      while ((entity = ephash_enum_next (&it->it)) != NULL)
+      while ((entity = entidx_enum_next (&it->it)) != NULL)
         if (is_visible (entity))
           break;
       if (entity) {
@@ -127,7 +127,7 @@ static bool bwhc_sample_iter_borrow_next (struct whc_sample_iter *opaque_it, str
         it->have_sample = true;
         return true;
       } else {
-        ephash_enum_fini (&it->it);
+        entidx_enum_fini (&it->it);
         return false;
       }
   }
@@ -143,15 +143,16 @@ static void bwhc_get_state (const struct whc *whc, struct whc_state *st)
   st->unacked_bytes = 0;
 }
 
-static int bwhc_insert (struct whc *whc, seqno_t max_drop_seq, seqno_t seq, struct nn_plist *plist, struct ddsi_serdata *serdata, struct ddsi_tkmap_instance *tk)
+static int bwhc_insert (struct whc *whc, seqno_t max_drop_seq, seqno_t seq, ddsrt_mtime_t exp, struct ddsi_plist *plist, struct ddsi_serdata *serdata, struct ddsi_tkmap_instance *tk)
 {
   (void)whc;
   (void)max_drop_seq;
   (void)seq;
+  (void)exp;
   (void)serdata;
   (void)tk;
   if (plist)
-    os_free (plist);
+    ddsrt_free (plist);
   return 0;
 }
 
@@ -192,10 +193,11 @@ static const struct whc_ops bwhc_ops = {
   .free = bwhc_free
 };
 
-struct whc *builtintopic_whc_new (enum ddsi_sertopic_builtintopic_type type)
+struct whc *builtintopic_whc_new (enum ddsi_sertopic_builtintopic_type type, const struct entity_index *entidx)
 {
-  struct bwhc *whc = os_malloc (sizeof (*whc));
+  struct bwhc *whc = ddsrt_malloc (sizeof (*whc));
   whc->common.ops = &bwhc_ops;
   whc->type = type;
+  whc->entidx = entidx;
   return (struct whc *) whc;
 }

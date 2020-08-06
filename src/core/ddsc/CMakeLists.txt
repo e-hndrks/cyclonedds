@@ -19,21 +19,21 @@ PREPEND(srcs_ddsc "${CMAKE_CURRENT_LIST_DIR}/src"
     dds_init.c
     dds_publisher.c
     dds_rhc.c
-    dds_time.c
+    dds_rhc_default.c
     dds_domain.c
     dds_instance.c
     dds_qos.c
+    dds_handles.c
     dds_entity.c
-    dds_key.c
+    dds_matched.c
     dds_querycond.c
     dds_topic.c
-    dds_err.c
     dds_listener.c
     dds_read.c
-    dds_stream.c
     dds_waitset.c
     dds_readcond.c
     dds_guardcond.c
+    dds_statistics.c
     dds_subscriber.c
     dds_write.c
     dds_whc.c
@@ -41,25 +41,27 @@ PREPEND(srcs_ddsc "${CMAKE_CURRENT_LIST_DIR}/src"
     dds_serdata_builtintopic.c
     dds_sertopic_builtintopic.c
 )
- 
-PREPEND(hdrs_public_ddsc "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include/ddsc>$<INSTALL_INTERFACE:include/ddsc>"
+
+PREPEND(hdrs_public_ddsc "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include/dds>$<INSTALL_INTERFACE:include/dds>"
     dds.h
-    dds_public_error.h
-    dds_public_impl.h
-    dds_public_listener.h
-    dds_public_qos.h
-    dds_public_status.h
-    dds_public_stream.h
-    dds_public_time.h
+    ddsc/dds_public_error.h
+    ddsc/dds_public_impl.h
+    ddsc/dds_public_listener.h
+    ddsc/dds_public_qos.h
+    ddsc/dds_public_qosdefs.h
+    ddsc/dds_public_status.h
+    ddsc/dds_statistics.h
+    ddsc/dds_rhc.h
+    ddsc/dds_internal_api.h
 )
 
 PREPEND(hdrs_private_ddsc "${CMAKE_CURRENT_LIST_DIR}/src"
     dds__alloc.h
     dds__builtin.h
     dds__domain.h
+    dds__handles.h
     dds__entity.h
     dds__init.h
-    dds__key.h
     dds__listener.h
     dds__participant.h
     dds__publisher.h
@@ -68,8 +70,8 @@ PREPEND(hdrs_private_ddsc "${CMAKE_CURRENT_LIST_DIR}/src"
     dds__readcond.h
     dds__guardcond.h
     dds__reader.h
-    dds__rhc.h
-    dds__stream.h
+    dds__rhc_default.h
+    dds__statistics.h
     dds__subscriber.h
     dds__topic.h
     dds__types.h
@@ -78,56 +80,43 @@ PREPEND(hdrs_private_ddsc "${CMAKE_CURRENT_LIST_DIR}/src"
     dds__whc.h
     dds__whc_builtintopic.h
     dds__serdata_builtintopic.h
+    dds__get_status.h
 )
-
-configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/cmake/ddsc_project.h.in"
-    "include/ddsc/ddsc_project.h")
 
 generate_export_header(
     ddsc
     BASE_NAME DDS
-    EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/include/ddsc/dds_export.h"
+    EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/include/dds/export.h"
 )
-
-target_include_directories(ddsc
-    PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>")
-
-target_include_directories(ddsc
-    PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>")
 
 target_sources(ddsc
     PRIVATE
         ${srcs_ddsc}
         ${hdrs_private_ddsc}
-        "include/ddsc/ddsc_project.h"
     PUBLIC
         ${hdrs_public_ddsc}
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>$<INSTALL_INTERFACE:include>/ddsc/dds_export.h"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>$<INSTALL_INTERFACE:include>/dds/export.h"
 )
 
 target_include_directories(ddsc
     PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>"
     PRIVATE
-        "${CMAKE_CURRENT_LIST_DIR}/src")
-
-target_include_directories(ddsc INTERFACE $<INSTALL_INTERFACE:include>)
+        "${CMAKE_CURRENT_LIST_DIR}/src"
+    INTERFACE
+        $<INSTALL_INTERFACE:include>)
 
 install(
-  DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/include/ddsc"
+  DIRECTORY
+      "${CMAKE_CURRENT_LIST_DIR}/include/"
+      "${CMAKE_CURRENT_BINARY_DIR}/include/"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT dev)
 
-install(
-  FILES "${CMAKE_CURRENT_BINARY_DIR}/include/ddsc/dds_export.h"
-  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ddsc"
-  COMPONENT dev)
-
 # TODO: improve test inclusion.
-if((BUILD_TESTING) AND ((NOT DEFINED MSVC_VERSION) OR (MSVC_VERSION GREATER "1800")))
+if((BUILD_TESTING) AND (BUILD_IDLC) AND ((NOT DEFINED MSVC_VERSION) OR (MSVC_VERSION GREATER "1800")))
   add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/tests")
 endif()
 

@@ -10,12 +10,17 @@
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
 #include <assert.h>
+#include <limits.h>
 
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
-#include "RoundTrip.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/cdtors.h"
+#include "dds/ddsrt/misc.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+#include "dds/ddsrt/atomics.h"
+#include "dds/ddsrt/time.h"
+
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -30,8 +35,8 @@ typedef enum thread_state_t {
 } thread_state_t;
 
 typedef struct thread_arg_t {
-    os_threadId    tid;
-    thread_state_t state;
+    ddsrt_thread_t tid;
+    ddsrt_atomic_uint32_t state;
     dds_entity_t   expected;
 } thread_arg_t;
 
@@ -55,17 +60,6 @@ static dds_entity_t waitset     = 0;
 static dds_entity_t publisher   = 0;
 static dds_entity_t subscriber  = 0;
 static dds_entity_t readcond    = 0;
-
-
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
 
 
 static void
@@ -93,7 +87,7 @@ ddsc_waitset_init(void)
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     char name[100];
 
-    os_osInit();
+    ddsrt_init();
 
     ddsc_waitset_basic_init();
 
@@ -103,7 +97,7 @@ ddsc_waitset_init(void)
     subscriber = dds_create_subscriber(participant, NULL, NULL);
     CU_ASSERT_FATAL(subscriber >  0);
 
-    topic = dds_create_topic(participant, &RoundTripModule_DataType_desc, create_topic_name("ddsc_waitset_test", name, sizeof name), NULL, NULL);
+    topic = dds_create_topic(participant, &RoundTripModule_DataType_desc, create_unique_topic_name("ddsc_waitset_test", name, sizeof name), NULL, NULL);
     CU_ASSERT_FATAL(topic >  0);
 
     reader = dds_create_reader(subscriber, topic, NULL, NULL);
@@ -128,7 +122,7 @@ ddsc_waitset_fini(void)
     dds_delete(publisher);
     dds_delete(subscriber);
     ddsc_waitset_basic_fini();
-    os_osExit();
+    ddsrt_fini();
 }
 
 static void
@@ -221,21 +215,20 @@ CU_Test(ddsc_waitset_create, deleted_participant, .init=ddsc_waitset_basic_init,
     deleted = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     dds_delete(deleted);
     ws = dds_create_waitset(deleted);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ws), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ws, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_create, invalid_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t par), ddsc_waitset_create, invalid_params, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_entity_t ws;
 
     ws = dds_create_waitset(par);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ws), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ws, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -247,10 +240,43 @@ CU_Theory((dds_entity_t *par), ddsc_waitset_create, non_participants, .init=ddsc
 {
     dds_entity_t ws;
     ws = dds_create_waitset(*par);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ws), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ws, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
+/*************************************************************************************************/
+CU_Test (ddsc_waitset_create, domain)
+{
+    dds_entity_t par, dom, ws;
+    dds_return_t rc;
+    par = dds_create_participant (0, NULL, NULL);
+    CU_ASSERT_FATAL (par > 0);
+    dom = dds_get_parent (par);
+    CU_ASSERT_FATAL (dom > 0);
+    ws = dds_create_waitset (dom);
+    CU_ASSERT_FATAL (ws > 0);
+    rc = dds_delete (dom);
+    CU_ASSERT_FATAL (rc == 0);
+}
+/*************************************************************************************************/
+
+/*************************************************************************************************/
+CU_Test (ddsc_waitset_create, cyclonedds)
+{
+    dds_entity_t ws;
+    dds_return_t rc;
+    /* Expect an uninitialised library */
+    rc = dds_get_parent (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (rc == DDS_RETCODE_PRECONDITION_NOT_MET);
+    ws = dds_create_waitset (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (ws > 0);
+    rc = dds_delete (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (rc == 0);
+    /* And the same afterward */
+    rc = dds_get_parent (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (rc == DDS_RETCODE_PRECONDITION_NOT_MET);
+}
+/*************************************************************************************************/
 
 
 /**************************************************************************************************
@@ -264,29 +290,28 @@ CU_Theory((dds_entity_t *par), ddsc_waitset_create, non_participants, .init=ddsc
  *************************************************************************************************/
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_attach, invalid_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
         CU_DataPoints(dds_attach_t,  (dds_attach_t)NULL, (dds_attach_t)&reader, (dds_attach_t)3, (dds_attach_t)0, (dds_attach_t)0, (dds_attach_t)0, (dds_attach_t)0),
 };
 CU_Theory((dds_entity_t e, dds_attach_t a), ddsc_waitset_attach, invalid_params, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
     dds_return_t ret;
     ret = dds_waitset_attach(waitset, e, a);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_attach, invalid_waitsets) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
         CU_DataPoints(dds_attach_t,  (dds_attach_t)NULL, (dds_attach_t)&reader, (dds_attach_t)3, (dds_attach_t)0, (dds_attach_t)0, (dds_attach_t)0, (dds_attach_t)0),
 };
 CU_Theory((dds_entity_t ws, dds_attach_t a), ddsc_waitset_attach, invalid_waitsets, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_waitset_attach(ws, participant, a);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -300,7 +325,7 @@ CU_Theory((dds_entity_t *ws, dds_entity_t *e, dds_attach_t a), ddsc_waitset_atta
 {
     dds_return_t ret;
     ret = dds_waitset_attach(*ws, *e, a);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -310,7 +335,53 @@ CU_Test(ddsc_waitset_attach, deleted_waitset, .init=ddsc_waitset_basic_init, .fi
     dds_return_t ret;
     dds_delete(waitset);
     ret = dds_waitset_attach(waitset, participant, 0);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
+}
+/*************************************************************************************************/
+
+/*************************************************************************************************/
+CU_TheoryDataPoints(ddsc_waitset_attach, scoping) = {
+    CU_DataPoints (int, -9, -1, -2,  0,  0,  2), /* owner: -9: lib, -1: dom0, -2: dom1 */
+    CU_DataPoints (int,  0,  0,  2,  0,  0,  2), /* ok1: participant one can attach */
+    CU_DataPoints (int,  3,  1,  3, -1, -1, -1), /* ok2: other participant one can attach, or -1 */
+    CU_DataPoints (int, -1,  2,  0,  1,  2,  0), /* fail: participant that one cannot attach, or -1 */
+};
+CU_Theory ((int owner, int ok1, int ok2, int fail), ddsc_waitset_attach, scoping)
+{
+    dds_entity_t par[4], dom[2], ws, ownh;
+    dds_return_t rc;
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            par[2*i+j] = dds_create_participant ((dds_domainid_t) i, NULL, NULL);
+            CU_ASSERT_FATAL (par[2*i+j] > 0);
+        }
+        dom[i] = dds_get_parent (par[2*i]);
+        CU_ASSERT_FATAL (dom[i] > 0);
+    }
+    if (owner == -9) {
+        ownh = DDS_CYCLONEDDS_HANDLE;
+    } else if (owner < 0) {
+        ownh = dom[-owner - 1];
+    } else {
+        ownh = par[owner];
+    }
+    printf ("%d %d %d %d | %"PRId32"\n", owner, ok1, ok2, fail, ownh);
+    ws = dds_create_waitset (ownh);
+    CU_ASSERT_FATAL (ws > 0);
+    rc = dds_waitset_attach (ws, par[ok1], 0);
+    CU_ASSERT_FATAL (rc == 0);
+    if (ok2 >= 0) {
+        rc = dds_waitset_attach (ws, par[ok2], 1);
+        CU_ASSERT_FATAL (rc == 0);
+    }
+    if (fail >= 0) {
+        rc = dds_waitset_attach (ws, par[fail], 2);
+        CU_ASSERT_FATAL (rc == DDS_RETCODE_BAD_PARAMETER);
+    }
+    rc = dds_delete (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (rc == 0);
+    rc = dds_get_parent (DDS_CYCLONEDDS_HANDLE);
+    CU_ASSERT_FATAL (rc == DDS_RETCODE_PRECONDITION_NOT_MET);
 }
 /*************************************************************************************************/
 
@@ -342,7 +413,7 @@ CU_Theory((dds_entity_t *ws, dds_entity_t *e, dds_attach_t a), ddsc_waitset_atta
 
     /* Try to attach. */
     ret = dds_waitset_attach(*ws, *e, a);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), exp);
+    CU_ASSERT_EQUAL_FATAL(ret, exp);
 
     /* Detach when needed. */
     if (ret == DDS_RETCODE_OK) {
@@ -361,13 +432,13 @@ CU_Test(ddsc_waitset_attach_detach, second, .init=ddsc_waitset_basic_init, .fini
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 
     ret = dds_waitset_attach(waitset, waitset, 0);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_PRECONDITION_NOT_MET);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_PRECONDITION_NOT_MET);
 
     ret = dds_waitset_detach(waitset, waitset);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 
     ret = dds_waitset_detach(waitset, waitset);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_PRECONDITION_NOT_MET);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_PRECONDITION_NOT_MET);
 }
 /*************************************************************************************************/
 
@@ -388,27 +459,26 @@ CU_Test(ddsc_waitset_attach_detach, second, .init=ddsc_waitset_basic_init, .fini
  *************************************************************************************************/
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_detach, invalid_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t e), ddsc_waitset_detach, invalid_params, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
     dds_return_t ret;
     ret = dds_waitset_detach(waitset, e);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_detach, invalid_waitsets) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t ws), ddsc_waitset_detach, invalid_waitsets, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_waitset_detach(ws, participant);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -431,7 +501,7 @@ CU_Theory((dds_entity_t *ws, dds_entity_t *e), ddsc_waitset_detach, valid_entiti
     }
 
     ret = dds_waitset_detach(*ws, *e);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), exp);
+    CU_ASSERT_EQUAL_FATAL(ret, exp);
 }
 /*************************************************************************************************/
 
@@ -575,21 +645,20 @@ CU_Test(ddsc_waitset_set_trigger, deleted_waitset, .init=ddsc_waitset_basic_init
     dds_return_t ret;
     dds_delete(waitset);
     ret = dds_waitset_set_trigger(waitset, true);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_set_trigger, invalid_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t ws), ddsc_waitset_set_trigger, invalid_params, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_waitset_set_trigger(ws, true);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -601,7 +670,7 @@ CU_Theory((dds_entity_t *ws), ddsc_waitset_set_trigger, non_waitsets, .init=ddsc
 {
     dds_return_t ret;
     ret = dds_waitset_set_trigger(*ws, true);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -620,22 +689,21 @@ CU_Test(ddsc_waitset_wait, deleted_waitset, .init=ddsc_waitset_attached_init, .f
     dds_return_t ret;
     dds_delete(waitset);
     ret = dds_waitset_wait(waitset, &triggered, 1, DDS_SECS(1));
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_wait, invalid_waitsets) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t ws), ddsc_waitset_wait, invalid_waitsets, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
     dds_attach_t triggered;
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_waitset_wait(ws, &triggered, 1, DDS_SECS(1));
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -648,7 +716,7 @@ CU_Theory((dds_entity_t *ws), ddsc_waitset_wait, non_waitsets, .init=ddsc_waitse
     dds_attach_t triggered;
     dds_return_t ret;
     ret = dds_waitset_wait(*ws, &triggered, 1, DDS_SECS(1));
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -667,7 +735,7 @@ CU_Theory((dds_attach_t *a, size_t size, int msec), ddsc_waitset_wait, invalid_p
     CU_ASSERT_FATAL(((a == NULL) && (size != 0)) || ((a != NULL) && (size == 0)) || (msec < 0));
 
     ret = dds_waitset_wait(waitset, a, size, DDS_MSECS(msec));
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -678,22 +746,21 @@ CU_Test(ddsc_waitset_wait_until, deleted_waitset, .init=ddsc_waitset_attached_in
     dds_return_t ret;
     dds_delete(waitset);
     ret = dds_waitset_wait_until(waitset, &triggered, 1, dds_time());
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_wait_until, invalid_waitsets) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t ws), ddsc_waitset_wait_until, invalid_waitsets, .init=ddsc_waitset_basic_init, .fini=ddsc_waitset_basic_fini)
 {
     dds_attach_t triggered;
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_waitset_wait_until(ws, &triggered, 1, dds_time());
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -706,7 +773,7 @@ CU_Theory((dds_entity_t *ws), ddsc_waitset_wait_until, non_waitsets, .init=ddsc_
     dds_attach_t triggered;
     dds_return_t ret;
     ret = dds_waitset_wait_until(*ws, &triggered, 1, dds_time());
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -724,7 +791,7 @@ CU_Theory((dds_attach_t *a, size_t size), ddsc_waitset_wait_until, invalid_param
     CU_ASSERT_FATAL(((a == NULL) && (size != 0)) || ((a != NULL) && (size == 0)));
 
     ret = dds_waitset_wait_until(waitset, a, size, dds_time());
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -823,9 +890,9 @@ CU_Theory((size_t size), ddsc_waitset_get_entities, array_sizes, .init=ddsc_wait
 CU_Test(ddsc_waitset_get_entities, no_array, .init=ddsc_waitset_attached_init, .fini=ddsc_waitset_attached_fini)
 {
     dds_return_t ret;
-    OS_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
     ret = dds_waitset_get_entities(waitset, NULL, 1);
-    OS_WARNING_MSVC_ON(6387);
+    DDSRT_WARNING_MSVC_ON(6387);
     /* ddsc_waitset_attached_init attached 7 entities. */
     CU_ASSERT_EQUAL_FATAL(ret, 7);
 }
@@ -838,22 +905,21 @@ CU_Test(ddsc_waitset_get_entities, deleted_waitset, .init=ddsc_waitset_attached_
     dds_entity_t entities[MAX_ENTITIES_CNT];
     dds_delete(waitset);
     ret = dds_waitset_get_entities(waitset, entities, MAX_ENTITIES_CNT);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_waitset_get_entities, invalid_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t ws), ddsc_waitset_get_entities, invalid_params, .init=ddsc_waitset_attached_init, .fini=ddsc_waitset_attached_fini)
 {
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_entity_t entities[MAX_ENTITIES_CNT];
     dds_return_t ret;
 
     ret = dds_waitset_get_entities(ws, entities, MAX_ENTITIES_CNT);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -866,7 +932,7 @@ CU_Theory((dds_entity_t *ws), ddsc_waitset_get_entities, non_waitsets, .init=dds
     dds_entity_t entities[MAX_ENTITIES_CNT];
     dds_return_t ret;
     ret = dds_waitset_get_entities(*ws, entities, MAX_ENTITIES_CNT);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1058,51 +1124,51 @@ waiting_thread(void *a)
     dds_attach_t triggered;
     dds_return_t ret;
 
-    arg->state = WAITING;
+    ddsrt_atomic_st32 (&arg->state, WAITING);
     /* This should block until the main test released all claims. */
     ret = dds_waitset_wait(waitset, &triggered, 1, DDS_SECS(1000));
     CU_ASSERT_EQUAL_FATAL(ret, 1);
     CU_ASSERT_EQUAL_FATAL(arg->expected, (dds_entity_t)(intptr_t)triggered);
-    arg->state = STOPPED;
+    ddsrt_atomic_st32 (&arg->state, STOPPED);
 
     return 0;
 }
 
-static os_result
-thread_reached_state(thread_state_t *actual, thread_state_t expected, int32_t msec)
+static dds_return_t
+thread_reached_state(ddsrt_atomic_uint32_t *actual, thread_state_t expected, int32_t msec)
 {
     /* Convenience function. */
-    os_time msec10 = { 0, 10000000 };
-    while ((msec > 0) && (*actual != expected)) {
-        os_nanoSleep(msec10);
+    dds_time_t msec10 = DDS_MSECS(10);
+    while ((msec > 0) && ((thread_state_t) ddsrt_atomic_ld32 (actual) != expected)) {
+        dds_sleepfor(msec10);
         msec -= 10;
     }
-    return (*actual == expected) ? os_resultSuccess : os_resultTimeout;
+    return ((thread_state_t) ddsrt_atomic_ld32 (actual) == expected) ? DDS_RETCODE_OK : DDS_RETCODE_TIMEOUT;
 }
 
 static void
 waiting_thread_start(struct thread_arg_t *arg, dds_entity_t expected)
 {
-    os_threadId   thread_id;
-    os_threadAttr thread_attr;
-    os_result     osr;
+    ddsrt_thread_t thread_id;
+    ddsrt_threadattr_t thread_attr;
+    dds_return_t rc;
 
     assert(arg);
 
     /* Create an other thread that will blocking wait on the waitset. */
     arg->expected = expected;
-    arg->state   = STARTING;
-    os_threadAttrInit(&thread_attr);
-    osr = os_threadCreate(&thread_id, "waiting_thread", &thread_attr, waiting_thread, arg);
-    CU_ASSERT_EQUAL_FATAL(osr, os_resultSuccess);
+    ddsrt_atomic_st32 (&arg->state, STARTING);
+    ddsrt_threadattr_init(&thread_attr);
+    rc = ddsrt_thread_create(&thread_id, "waiting_thread", &thread_attr, waiting_thread, arg);
+    CU_ASSERT_EQUAL_FATAL(rc, DDS_RETCODE_OK);
 
     /* The thread should reach 'waiting' state. */
-    osr = thread_reached_state(&(arg->state), WAITING, 1000);
-    CU_ASSERT_EQUAL_FATAL(osr, os_resultSuccess);
+    rc = thread_reached_state(&(arg->state), WAITING, 1000);
+    CU_ASSERT_EQUAL_FATAL(rc, DDS_RETCODE_OK);
 
     /* But thread should block and thus NOT reach 'stopped' state. */
-    osr = thread_reached_state(&(arg->state), STOPPED, 100);
-    CU_ASSERT_EQUAL_FATAL(osr, os_resultTimeout);
+    rc = thread_reached_state(&(arg->state), STOPPED, 100);
+    CU_ASSERT_EQUAL_FATAL(rc, DDS_RETCODE_TIMEOUT);
 
     arg->tid = thread_id;
 }
@@ -1110,11 +1176,11 @@ waiting_thread_start(struct thread_arg_t *arg, dds_entity_t expected)
 static dds_return_t
 waiting_thread_expect_exit(struct thread_arg_t *arg)
 {
-    os_result osr;
+    dds_return_t rc;
     assert(arg);
-    osr = thread_reached_state(&(arg->state), STOPPED, 5000);
-    if (osr == os_resultSuccess) {
-        os_threadWaitExit(arg->tid, NULL);
+    rc = thread_reached_state(&(arg->state), STOPPED, 5000);
+    if (rc == DDS_RETCODE_OK) {
+        ddsrt_thread_join(arg->tid, NULL);
         return DDS_RETCODE_OK;
     }
     return DDS_RETCODE_TIMEOUT;

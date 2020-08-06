@@ -13,12 +13,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "os/os.h"
+#include "dds/ddsrt/heap.h"
+#include "dds/ddsrt/sockets.h"
+#include "dds/ddsrt/sync.h"
 
-#include "ddsi/q_sockwaitset.h"
-#include "ddsi/q_config.h"
-#include "ddsi/q_log.h"
-#include "ddsi/ddsi_tran.h"
+#include "dds/ddsi/q_sockwaitset.h"
+#include "dds/ddsi/q_config.h"
+#include "dds/ddsi/q_log.h"
+#include "dds/ddsi/ddsi_tran.h"
 
 #define WAITSET_DELTA 8
 
@@ -37,6 +39,7 @@
 #if MODE_SEL == MODE_KQUEUE
 
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/fcntl.h>
 #include <sys/types.h>
@@ -48,7 +51,7 @@ struct os_sockWaitsetCtx
   struct kevent *evs;
   uint32_t nevs;
   uint32_t evs_sz;
-  uint32_t index;            /* cursor for enumerating */
+  uint32_t index; /* cursor for enumerating */
 };
 
 struct entry {
@@ -60,11 +63,11 @@ struct entry {
 struct os_sockWaitset
 {
   int kqueue;
-  os_socket pipe[2];             /* pipe used for triggering */
-  os_atomic_uint32_t sz;
+  int pipe[2]; /* pipe used for triggering */
+  ddsrt_atomic_uint32_t sz;
   struct entry *entries;
-  struct os_sockWaitsetCtx ctx;  /* set of descriptors being handled  */
-  os_mutex lock; /* for add/delete */
+  struct os_sockWaitsetCtx ctx; /* set of descriptors being handled */
+  ddsrt_mutex_t lock; /* for add/delete */
 };
 
 static int add_entry_locked (os_sockWaitset ws, ddsi_tran_conn_t conn, int fd)
@@ -72,7 +75,7 @@ static int add_entry_locked (os_sockWaitset ws, ddsi_tran_conn_t conn, int fd)
   uint32_t idx, fidx, sz, n;
   struct kevent kev;
   assert (fd >= 0);
-  sz = os_atomic_ld32 (&ws->sz);
+  sz = ddsrt_atomic_ld32 (&ws->sz);
   for (idx = 0, fidx = UINT32_MAX, n = 0; idx < sz; idx++)
   {
     if (ws->entries[idx].fd == -1)
@@ -85,8 +88,8 @@ static int add_entry_locked (os_sockWaitset ws, ddsi_tran_conn_t conn, int fd)
 
   if (fidx == UINT32_MAX)
   {
-    const uint32_t newsz = os_atomic_add32_nv (&ws->sz, WAITSET_DELTA);
-    ws->entries = os_realloc (ws->entries, newsz * sizeof (*ws->entries));
+    const uint32_t newsz = ddsrt_atomic_add32_nv (&ws->sz, WAITSET_DELTA);
+    ws->entries = ddsrt_realloc (ws->entries, newsz * sizeof (*ws->entries));
     for (idx = sz; idx < newsz; idx++)
       ws->entries[idx].fd = -1;
     fidx = sz;
@@ -105,17 +108,17 @@ os_sockWaitset os_sockWaitsetNew (void)
   const uint32_t sz = WAITSET_DELTA;
   os_sockWaitset ws;
   uint32_t i;
-  if ((ws = os_malloc (sizeof (*ws))) == NULL)
+  if ((ws = ddsrt_malloc (sizeof (*ws))) == NULL)
     goto fail_waitset;
-  os_atomic_st32 (&ws->sz, sz);
-  if ((ws->entries = os_malloc (sz * sizeof (*ws->entries))) == NULL)
+  ddsrt_atomic_st32 (&ws->sz, sz);
+  if ((ws->entries = ddsrt_malloc (sz * sizeof (*ws->entries))) == NULL)
     goto fail_entries;
   for (i = 0; i < sz; i++)
     ws->entries[i].fd = -1;
   ws->ctx.nevs = 0;
   ws->ctx.index = 0;
   ws->ctx.evs_sz = sz;
-  if ((ws->ctx.evs = malloc (ws->ctx.evs_sz * sizeof (*ws->ctx.evs))) == NULL)
+  if ((ws->ctx.evs = ddsrt_malloc (ws->ctx.evs_sz * sizeof (*ws->ctx.evs))) == NULL)
     goto fail_ctx_evs;
   if ((ws->kqueue = kqueue ()) == -1)
     goto fail_kqueue;
@@ -130,7 +133,7 @@ os_sockWaitset os_sockWaitsetNew (void)
     goto fail_fcntl;
   if (fcntl (ws->pipe[1], F_SETFD, fcntl (ws->pipe[1], F_GETFD) | FD_CLOEXEC) == -1)
     goto fail_fcntl;
-  os_mutexInit (&ws->lock);
+  ddsrt_mutex_init (&ws->lock);
   return ws;
 
 fail_fcntl:
@@ -140,45 +143,43 @@ fail_add_trigger:
 fail_pipe:
   close (ws->kqueue);
 fail_kqueue:
-  os_free (ws->ctx.evs);
+  ddsrt_free (ws->ctx.evs);
 fail_ctx_evs:
-  os_free (ws->entries);
+  ddsrt_free (ws->entries);
 fail_entries:
-  os_free (ws);
+  ddsrt_free (ws);
 fail_waitset:
   return NULL;
 }
 
 void os_sockWaitsetFree (os_sockWaitset ws)
 {
-  os_mutexDestroy (&ws->lock);
+  ddsrt_mutex_destroy (&ws->lock);
   close (ws->pipe[0]);
   close (ws->pipe[1]);
   close (ws->kqueue);
-  os_free (ws->entries);
-  os_free (ws->ctx.evs);
-  os_free (ws);
+  ddsrt_free (ws->entries);
+  ddsrt_free (ws->ctx.evs);
+  ddsrt_free (ws);
 }
 
 void os_sockWaitsetTrigger (os_sockWaitset ws)
 {
   char buf = 0;
   int n;
-  int err;
   n = (int)write (ws->pipe[1], &buf, 1);
   if (n != 1)
   {
-    err = os_getErrno ();
-    DDS_WARNING("os_sockWaitsetTrigger: read failed on trigger pipe, errno = %d\n", err);
+    DDS_WARNING("os_sockWaitsetTrigger: read failed on trigger pipe, errno = %d\n", errno);
   }
 }
 
 int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
 {
   int ret;
-  os_mutexLock (&ws->lock);
+  ddsrt_mutex_lock (&ws->lock);
   ret = add_entry_locked (ws, conn, ddsi_conn_handle (conn));
-  os_mutexUnlock (&ws->lock);
+  ddsrt_mutex_unlock (&ws->lock);
   return ret;
 }
 
@@ -190,8 +191,8 @@ void os_sockWaitsetPurge (os_sockWaitset ws, unsigned index)
      entries */
   uint32_t i, sz;
   struct kevent kev;
-  os_mutexLock (&ws->lock);
-  sz = os_atomic_ld32 (&ws->sz);
+  ddsrt_mutex_lock (&ws->lock);
+  sz = ddsrt_atomic_ld32 (&ws->sz);
   close (ws->kqueue);
   if ((ws->kqueue = kqueue()) == -1)
     abort (); /* FIXME */
@@ -207,7 +208,7 @@ void os_sockWaitsetPurge (os_sockWaitset ws, unsigned index)
     ws->entries[i].conn = NULL;
     ws->entries[i].fd = -1;
   }
-  os_mutexUnlock (&ws->lock);
+  ddsrt_mutex_unlock (&ws->lock);
 }
 
 void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
@@ -215,8 +216,8 @@ void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
   const int fd = ddsi_conn_handle (conn);
   uint32_t i, sz;
   assert (fd >= 0);
-  os_mutexLock (&ws->lock);
-  sz = os_atomic_ld32 (&ws->sz);
+  ddsrt_mutex_lock (&ws->lock);
+  sz = ddsrt_atomic_ld32 (&ws->sz);
   for (i = 1; i < sz; i++)
     if (ws->entries[i].fd == fd)
       break;
@@ -228,7 +229,7 @@ void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
       abort (); /* FIXME */
     ws->entries[i].fd = -1;
   }
-  os_mutexUnlock (&ws->lock);
+  ddsrt_mutex_unlock (&ws->lock);
 }
 
 os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
@@ -236,12 +237,12 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
   /* if the array of events is smaller than the number of file descriptors in the
      kqueue, things will still work fine, as the kernel will just return what can
      be stored, and the set will be grown on the next call */
-  uint32_t ws_sz = os_atomic_ld32 (&ws->sz);
+  uint32_t ws_sz = ddsrt_atomic_ld32 (&ws->sz);
   int nevs;
   if (ws->ctx.evs_sz < ws_sz)
   {
     ws->ctx.evs_sz = ws_sz;
-    ws->ctx.evs = os_realloc (ws->ctx.evs, ws_sz * sizeof(*ws->ctx.evs));
+    ws->ctx.evs = ddsrt_realloc (ws->ctx.evs, ws_sz * sizeof(*ws->ctx.evs));
   }
   nevs = kevent (ws->kqueue, NULL, 0, ws->ctx.evs, (int)ws->ctx.evs_sz, NULL);
   if (nevs < 0)
@@ -250,7 +251,7 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
       nevs = 0;
     else
     {
-      DDS_WARNING("os_sockWaitsetWait: kevent failed, errno = %d\n", os_getErrno());
+      DDS_WARNING("os_sockWaitsetWait: kevent failed, errno = %d\n", errno);
       return NULL;
     }
   }
@@ -292,40 +293,36 @@ struct os_sockWaitsetCtx
 
 struct os_sockWaitset
 {
-  os_mutex mutex;  /* concurrency guard */
+  ddsrt_mutex_t mutex;  /* concurrency guard */
   struct os_sockWaitsetCtx ctx;
   struct os_sockWaitsetCtx ctx0;
 };
 
 os_sockWaitset os_sockWaitsetNew (void)
 {
-  os_sockWaitset ws = os_malloc (sizeof (*ws));
+  os_sockWaitset ws = ddsrt_malloc (sizeof (*ws));
   ws->ctx.conns[0] = NULL;
   ws->ctx.events[0] = WSACreateEvent ();
   ws->ctx.n = 1;
   ws->ctx.index = -1;
-  os_mutexInit (&ws->mutex);
+  ddsrt_mutex_init (&ws->mutex);
   return ws;
 }
 
 void os_sockWaitsetFree (os_sockWaitset ws)
 {
-  unsigned i;
-
-  for (i = 0; i < ws->ctx.n; i++)
+  for (unsigned i = 0; i < ws->ctx.n; i++)
   {
     WSACloseEvent (ws->ctx.events[i]);
   }
-  os_mutexDestroy (&ws->mutex);
-  os_free (ws);
+  ddsrt_mutex_destroy (&ws->mutex);
+  ddsrt_free (ws);
 }
 
 void os_sockWaitsetPurge (os_sockWaitset ws, unsigned index)
 {
-  unsigned i;
-
-  os_mutexLock (&ws->mutex);
-  for (i = index + 1; i < ws->ctx.n; i++)
+  ddsrt_mutex_lock (&ws->mutex);
+  for (unsigned i = index + 1; i < ws->ctx.n; i++)
   {
     ws->ctx.conns[i] = NULL;
     if (!WSACloseEvent (ws->ctx.events[i]))
@@ -334,15 +331,13 @@ void os_sockWaitsetPurge (os_sockWaitset ws, unsigned index)
     }
   }
   ws->ctx.n = index + 1;
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 }
 
 void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
 {
-  unsigned i;
-
-  os_mutexLock (&ws->mutex);
-  for (i = 0; i < ws->ctx.n; i++)
+  ddsrt_mutex_lock (&ws->mutex);
+  for (unsigned i = 0; i < ws->ctx.n; i++)
   {
     if (conn == ws->ctx.conns[i])
     {
@@ -356,7 +351,7 @@ void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
       break;
     }
   }
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 }
 
 void os_sockWaitsetTrigger (os_sockWaitset ws)
@@ -374,7 +369,7 @@ int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
   unsigned idx;
   int ret;
 
-  os_mutexLock (&ws->mutex);
+  ddsrt_mutex_lock (&ws->mutex);
 
   for (idx = 0; idx < ws->ctx.n; idx++)
   {
@@ -406,7 +401,7 @@ int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
     }
   }
 
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
   return ret;
 }
 
@@ -416,9 +411,9 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
 
   assert (ws->index == -1);
 
-  os_mutexLock (&ws->mutex);
+  ddsrt_mutex_lock (&ws->mutex);
   ws->ctx0 = ws->ctx;
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 
   if ((idx = WSAWaitForMultipleEvents (ws->ctx0.n, ws->ctx0.events, FALSE, WSA_INFINITE, FALSE)) == WSA_WAIT_FAILED)
   {
@@ -508,7 +503,7 @@ int os_sockWaitsetNextEvent (os_sockWaitsetCtx ctx, ddsi_tran_conn_t * conn)
 #define OSPL_PIPENAMESIZE 26
 #endif
 
-#ifndef _WIN32
+#if !_WIN32 && !LWIP_SOCKET
 
 #ifndef __VXWORKS__
 #include <sys/fcntl.h>
@@ -523,12 +518,12 @@ int os_sockWaitsetNextEvent (os_sockWaitsetCtx ctx, ddsi_tran_conn_t * conn)
 #include <fcntl.h>
 #endif
 
-#endif /* _WIN32 */
+#endif /* !_WIN32 && !LWIP_SOCKET */
 
 typedef struct os_sockWaitsetSet
 {
   ddsi_tran_conn_t * conns;  /* connections in set */
-  os_socket * fds;           /* file descriptors in set */
+  ddsrt_socket_t * fds;           /* file descriptors in set */
   unsigned sz;               /* max number of fds in context */
   unsigned n;                /* actual number of fds in context */
 } os_sockWaitsetSet;
@@ -542,21 +537,21 @@ struct os_sockWaitsetCtx
 
 struct os_sockWaitset
 {
-  os_socket pipe[2];             /* pipe used for triggering */
-  os_mutex mutex;                /* concurrency guard */
+  ddsrt_socket_t pipe[2];             /* pipe used for triggering */
+  ddsrt_mutex_t mutex;                /* concurrency guard */
   int fdmax_plus_1;              /* value for first parameter of select() */
   os_sockWaitsetSet set;         /* set of descriptors handled next */
   struct os_sockWaitsetCtx ctx;  /* set of descriptors being handled  */
 };
 
 #if defined (_WIN32)
-static int make_pipe (os_socket fd[2])
+static int make_pipe (ddsrt_socket_t fd[2])
 {
   struct sockaddr_in addr;
   socklen_t asize = sizeof (addr);
-  os_socket listener = socket (AF_INET, SOCK_STREAM, 0);
-  os_socket s1 = socket (AF_INET, SOCK_STREAM, 0);
-  os_socket s2 = OS_INVALID_SOCKET;
+  ddsrt_socket_t listener = socket (AF_INET, SOCK_STREAM, 0);
+  ddsrt_socket_t s1 = socket (AF_INET, SOCK_STREAM, 0);
+  ddsrt_socket_t s2 = DDSRT_INVALID_SOCKET;
 
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl (INADDR_LOOPBACK);
@@ -585,7 +580,7 @@ fail:
   closesocket (s2);
   return -1;
 }
-#elif defined (VXWORKS_RTP) || defined (_WRS_KERNEL)
+#elif defined(__VXWORKS__)
 static int make_pipe (int pfd[2])
 {
   char pipename[OSPL_PIPENAMESIZE];
@@ -608,7 +603,7 @@ fail_open0:
 fail_pipedev:
   return -1;
 }
-#else
+#elif !defined(LWIP_SOCKET)
 static int make_pipe (int pfd[2])
 {
   return pipe (pfd);
@@ -617,10 +612,16 @@ static int make_pipe (int pfd[2])
 
 static void os_sockWaitsetNewSet (os_sockWaitsetSet * set)
 {
-  set->fds = os_malloc (WAITSET_DELTA * sizeof (*set->fds));
-  set->conns = os_malloc (WAITSET_DELTA * sizeof (*set->conns));
+  set->fds = ddsrt_malloc (WAITSET_DELTA * sizeof (*set->fds));
+  set->conns = ddsrt_malloc (WAITSET_DELTA * sizeof (*set->conns));
   set->sz = WAITSET_DELTA;
   set->n = 1;
+}
+
+static void os_sockWaitsetFreeSet (os_sockWaitsetSet * set)
+{
+  ddsrt_free (set->fds);
+  ddsrt_free (set->conns);
 }
 
 static void os_sockWaitsetNewCtx (os_sockWaitsetCtx ctx)
@@ -629,10 +630,15 @@ static void os_sockWaitsetNewCtx (os_sockWaitsetCtx ctx)
   FD_ZERO (&ctx->rdset);
 }
 
+static void os_sockWaitsetFreeCtx (os_sockWaitsetCtx ctx)
+{
+  os_sockWaitsetFreeSet (&ctx->set);
+}
+
 os_sockWaitset os_sockWaitsetNew (void)
 {
   int result;
-  os_sockWaitset ws = os_malloc (sizeof (*ws));
+  os_sockWaitset ws = ddsrt_malloc (sizeof (*ws));
 
   os_sockWaitsetNewSet (&ws->set);
   os_sockWaitsetNewCtx (&ws->ctx);
@@ -643,54 +649,40 @@ os_sockWaitset os_sockWaitsetNew (void)
   ws->fdmax_plus_1 = FD_SETSIZE;
 #endif
 
-#if defined (VXWORKS_RTP) || defined (_WRS_KERNEL)
-  int make_pipe (int pfd[2])
-  {
-    char pipename[OSPL_PIPENAMESIZE];
-    int pipecount=0;
-    do
-    {
-      snprintf ((char*)&pipename, sizeof(pipename), "/pipe/ospl%d", pipecount++ );
-    }
-    while ((result = pipeDevCreate ((char*) &pipename, 1, 1)) == -1 && os_getErrno() == EINVAL);
-    if (result != -1)
-    {
-      result = open ((char*) &pipename, O_RDWR, 0644);
-      if (result != -1)
-      {
-        ws->pipe[0] = result;
-        result = open ((char*) &pipename, O_RDWR, 0644);
-        if (result != -1)
-        {
-          ws->pipe[1] = result;
-        }
-        else
-        {
-          close (ws->pipe[0]);
-          pipeDevDelete (pipename, 0);
-        }
-      }
-    }
-  }
+#if defined(LWIP_SOCKET)
+  ws->pipe[0] = -1;
+  ws->pipe[1] = -1;
+  result = 0;
 #else
   result = make_pipe (ws->pipe);
 #endif
-  assert (result != -1);
-  (void) result;
+  if (result == -1)
+  {
+    os_sockWaitsetFreeCtx (&ws->ctx);
+    os_sockWaitsetFreeSet (&ws->set);
+    ddsrt_free (ws);
+    return NULL;
+  }
 
+#if !defined(LWIP_SOCKET)
   ws->set.fds[0] = ws->pipe[0];
+#else
+  ws->set.fds[0] = 0;
+#endif
   ws->set.conns[0] = NULL;
 
-#if ! defined (VXWORKS_RTP) && ! defined ( _WRS_KERNEL ) && ! defined (_WIN32)
-  fcntl (ws->pipe[0], F_SETFD, fcntl (ws->pipe[0], F_GETFD) | FD_CLOEXEC);
-  fcntl (ws->pipe[1], F_SETFD, fcntl (ws->pipe[1], F_GETFD) | FD_CLOEXEC);
+#if !defined(__VXWORKS__) && !defined(_WIN32) && !defined(LWIP_SOCKET)
+  (void) fcntl (ws->pipe[0], F_SETFD, fcntl (ws->pipe[0], F_GETFD) | FD_CLOEXEC);
+  (void) fcntl (ws->pipe[1], F_SETFD, fcntl (ws->pipe[1], F_GETFD) | FD_CLOEXEC);
 #endif
+#if !defined(LWIP_SOCKET)
   FD_SET (ws->set.fds[0], &ws->ctx.rdset);
-#if ! defined (_WIN32)
+#endif
+#if !defined(_WIN32)
   ws->fdmax_plus_1 = ws->set.fds[0] + 1;
 #endif
 
-  os_mutexInit (&ws->mutex);
+  ddsrt_mutex_init (&ws->mutex);
 
   return ws;
 }
@@ -698,48 +690,39 @@ os_sockWaitset os_sockWaitsetNew (void)
 static void os_sockWaitsetGrow (os_sockWaitsetSet * set)
 {
   set->sz += WAITSET_DELTA;
-  set->conns = os_realloc (set->conns, set->sz * sizeof (*set->conns));
-  set->fds = os_realloc (set->fds, set->sz * sizeof (*set->fds));
-}
-
-static void os_sockWaitsetFreeSet (os_sockWaitsetSet * set)
-{
-  os_free (set->fds);
-  os_free (set->conns);
-}
-
-static void os_sockWaitsetFreeCtx (os_sockWaitsetCtx ctx)
-{
-  os_sockWaitsetFreeSet (&ctx->set);
+  set->conns = ddsrt_realloc (set->conns, set->sz * sizeof (*set->conns));
+  set->fds = ddsrt_realloc (set->fds, set->sz * sizeof (*set->fds));
 }
 
 void os_sockWaitsetFree (os_sockWaitset ws)
 {
-#ifdef VXWORKS_RTP
+#if defined(__VXWORKS__) && defined(__RTP__)
   char nameBuf[OSPL_PIPENAMESIZE];
   ioctl (ws->pipe[0], FIOGETNAME, &nameBuf);
 #endif
-#if defined (_WIN32)
+#if defined(_WIN32)
   closesocket (ws->pipe[0]);
   closesocket (ws->pipe[1]);
-#else
-  close (ws->pipe[0]);
-  close (ws->pipe[1]);
+#elif !defined(LWIP_SOCKET)
+  (void) close (ws->pipe[0]);
+  (void) close (ws->pipe[1]);
 #endif
-#ifdef VXWORKS_RTP
+#if defined(__VXWORKS__) && defined(__RTP__)
   pipeDevDelete ((char*) &nameBuf, 0);
 #endif
   os_sockWaitsetFreeSet (&ws->set);
   os_sockWaitsetFreeCtx (&ws->ctx);
-  os_mutexDestroy (&ws->mutex);
-  os_free (ws);
+  ddsrt_mutex_destroy (&ws->mutex);
+  ddsrt_free (ws);
 }
 
 void os_sockWaitsetTrigger (os_sockWaitset ws)
 {
+#if defined(LWIP_SOCKET)
+  (void)ws;
+#else
   char buf = 0;
   int n;
-  int err;
 
 #if defined (_WIN32)
   n = send (ws->pipe[1], &buf, 1, 0);
@@ -748,14 +731,14 @@ void os_sockWaitsetTrigger (os_sockWaitset ws)
 #endif
   if (n != 1)
   {
-    err = os_getErrno ();
-    DDS_WARNING("os_sockWaitsetTrigger: read failed on trigger pipe, errno = %d", err);
+    DDS_WARNING("os_sockWaitsetTrigger: write failed on trigger pipe\n");
   }
+#endif
 }
 
 int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
 {
-  os_socket handle = ddsi_conn_handle (conn);
+  ddsrt_socket_t handle = ddsi_conn_handle (conn);
   os_sockWaitsetSet * set = &ws->set;
   unsigned idx;
   int ret;
@@ -765,7 +748,7 @@ int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
   assert (handle < FD_SETSIZE);
 #endif
 
-  os_mutexLock (&ws->mutex);
+  ddsrt_mutex_lock (&ws->mutex);
   for (idx = 0; idx < set->n; idx++)
   {
     if (set->conns[idx] == conn)
@@ -786,35 +769,33 @@ int os_sockWaitsetAdd (os_sockWaitset ws, ddsi_tran_conn_t conn)
     set->n++;
     ret = 1;
   }
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
   return ret;
 }
 
 void os_sockWaitsetPurge (os_sockWaitset ws, unsigned index)
 {
-  unsigned i;
   os_sockWaitsetSet * set = &ws->set;
 
-  os_mutexLock (&ws->mutex);
+  ddsrt_mutex_lock (&ws->mutex);
   if (index + 1 <= set->n)
   {
-    for (i = index + 1; i < set->n; i++)
+    for (unsigned i = index + 1; i < set->n; i++)
     {
       set->conns[i] = NULL;
       set->fds[i] = 0;
     }
     set->n = index + 1;
   }
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 }
 
 void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
 {
-  unsigned i;
   os_sockWaitsetSet * set = &ws->set;
 
-  os_mutexLock (&ws->mutex);
-  for (i = 0; i < set->n; i++)
+  ddsrt_mutex_lock (&ws->mutex);
+  for (unsigned i = 0; i < set->n; i++)
   {
     if (conn == set->conns[i])
     {
@@ -827,21 +808,20 @@ void os_sockWaitsetRemove (os_sockWaitset ws, ddsi_tran_conn_t conn)
       break;
     }
   }
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 }
 
 os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
 {
-  int n;
+  int32_t n = -1;
   unsigned u;
-  int err;
   int fdmax;
   fd_set * rdset = NULL;
   os_sockWaitsetCtx ctx = &ws->ctx;
   os_sockWaitsetSet * dst = &ctx->set;
   os_sockWaitsetSet * src = &ws->set;
 
-  os_mutexLock (&ws->mutex);
+  ddsrt_mutex_lock (&ws->mutex);
 
   fdmax = ws->fdmax_plus_1;
 
@@ -859,28 +839,33 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
     dst->fds[u] = src->fds[u];
   }
 
-  os_mutexUnlock (&ws->mutex);
+  ddsrt_mutex_unlock (&ws->mutex);
 
   /* Copy file descriptors into select read set */
 
   rdset = &ctx->rdset;
   FD_ZERO (rdset);
+#if !defined(LWIP_SOCKET)
   for (u = 0; u < dst->n; u++)
   {
     FD_SET (dst->fds[u], rdset);
   }
+#else
+  for (u = 1; u < dst->n; u++)
+  {
+    DDSRT_WARNING_GNUC_OFF(sign-conversion)
+    FD_SET (dst->fds[u], rdset);
+    DDSRT_WARNING_GNUC_ON(sign-conversion)
+  }
+#endif /* LWIP_SOCKET */
 
   do
   {
-    n = select (fdmax, rdset, NULL, NULL, NULL);
-    if (n < 0)
+    dds_return_t rc = ddsrt_select (fdmax, rdset, NULL, NULL, DDS_INFINITY, &n);
+    if (rc != DDS_RETCODE_OK && rc != DDS_RETCODE_INTERRUPTED && rc != DDS_RETCODE_TRY_AGAIN)
     {
-      err = os_getErrno ();
-      if ((err != os_sockEINTR) && (err != os_sockEAGAIN))
-      {
-        DDS_WARNING("os_sockWaitsetWait: select failed, errno = %d", err);
-        break;
-      }
+      DDS_WARNING("os_sockWaitsetWait: select failed, retcode = %"PRId32, rc);
+      break;
     }
   }
   while (n == -1);
@@ -889,6 +874,7 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
   {
     /* this simply skips the trigger fd */
     ctx->index = 1;
+#if ! defined(LWIP_SOCKET)
     if (FD_ISSET (dst->fds[0], rdset))
     {
       char buf;
@@ -900,24 +886,30 @@ os_sockWaitsetCtx os_sockWaitsetWait (os_sockWaitset ws)
 #endif
       if (n1 != 1)
       {
-        err = os_getErrno ();
-        DDS_WARNING("os_sockWaitsetWait: read failed on trigger pipe, errno = %d", err);
+        DDS_WARNING("os_sockWaitsetWait: read failed on trigger pipe\n");
         assert (0);
       }
     }
+#endif /* LWIP_SOCKET */
     return ctx;
   }
 
   return NULL;
 }
 
+#if defined(LWIP_SOCKET)
+DDSRT_WARNING_GNUC_OFF(sign-conversion)
+#endif
+
 int os_sockWaitsetNextEvent (os_sockWaitsetCtx ctx, ddsi_tran_conn_t * conn)
 {
   while (ctx->index < ctx->set.n)
   {
     unsigned idx = ctx->index++;
-    os_socket fd = ctx->set.fds[idx];
+    ddsrt_socket_t fd = ctx->set.fds[idx];
+#if ! defined (LWIP_SOCKET)
     assert(idx > 0);
+#endif
     if (FD_ISSET (fd, &ctx->rdset))
     {
       *conn = ctx->set.conns[idx];
@@ -927,6 +919,10 @@ int os_sockWaitsetNextEvent (os_sockWaitsetCtx ctx, ddsi_tran_conn_t * conn)
   }
   return -1;
 }
+
+#if defined(LWIP_SOCKET)
+DDSRT_WARNING_GNUC_ON(sign-conversion)
+#endif
 
 #else
 #error "no mode selected"

@@ -9,13 +9,8 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
-#include "RoundTrip.h"
-#include "Space.h"
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "test-common.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
+#include "dds/dds.h"
+#include "test_common.h"
 
 static dds_entity_t g_participant = 0;
 static dds_entity_t g_subscriber  = 0;
@@ -65,7 +60,7 @@ teardown(void)
 }
 
 static void
-check_default_qos_of_builtin_entity(dds_entity_t entity)
+check_default_qos_of_builtin_entity(dds_entity_t entity, bool isread)
 {
   dds_return_t ret;
   int64_t deadline;
@@ -112,8 +107,7 @@ check_default_qos_of_builtin_entity(dds_entity_t entity)
   dds_qget_partition(qos, &plen, &partitions);
   // no getter for ENTITY_FACTORY
 
-  CU_ASSERT_FATAL((entity & DDS_ENTITY_KIND_MASK) == DDS_KIND_SUBSCRIBER || (entity & DDS_ENTITY_KIND_MASK) == DDS_KIND_READER);
-  if ((entity & DDS_ENTITY_KIND_MASK) == DDS_KIND_SUBSCRIBER) {
+  if (!isread) {
       CU_ASSERT_FATAL(plen == 1);
       CU_ASSERT_STRING_EQUAL_FATAL(partitions[0], "__BUILT-IN PARTITION__");
   } else {
@@ -305,9 +299,41 @@ CU_Test(ddsc_builtin_topics, builtin_qos, .init = setup, .fini = teardown)
 
   dds_sub_rdr = dds_create_reader(g_participant, DDS_BUILTIN_TOPIC_DCPSSUBSCRIPTION, NULL, NULL);
   CU_ASSERT_FATAL(dds_sub_rdr > 0);
-  check_default_qos_of_builtin_entity(dds_sub_rdr);
+  check_default_qos_of_builtin_entity(dds_sub_rdr, 1);
 
   dds_sub_subscriber = dds_get_parent(dds_sub_rdr);
   CU_ASSERT_FATAL(dds_sub_subscriber > 0);
-  check_default_qos_of_builtin_entity(dds_sub_subscriber);
+  check_default_qos_of_builtin_entity(dds_sub_subscriber, 0);
+}
+
+CU_Test(ddsc_builtin_topics, read_nothing)
+{
+  dds_entity_t pp;
+  dds_entity_t rd;
+  dds_return_t ret;
+  dds_sample_info_t si;
+  void *raw1, *raw2;
+  int32_t n1, n2;
+
+  pp = dds_create_participant (DDS_DOMAIN_DEFAULT, NULL, NULL);
+  CU_ASSERT_FATAL (pp > 0);
+  rd = dds_create_reader (pp, DDS_BUILTIN_TOPIC_DCPSSUBSCRIPTION, NULL, NULL);
+  CU_ASSERT_FATAL (rd > 0);
+
+  /* Can't guarantee there's no other process around with a publication, but
+     we can take until nothing remains.  The point is checking handling of
+     freeing memory when a loan was outstanding, memory had to be allocated,
+     and subsequently had to be freed because of an absence of data. */
+  raw1 = raw2 = NULL;
+  n1 = dds_take (rd, &raw1, &si, 1, 1);
+  CU_ASSERT_FATAL (n1 >= 0);
+  n2 = dds_take (rd, &raw2, &si, 1, 1);
+  CU_ASSERT_FATAL (n2 >= 0);
+  ret = dds_return_loan (rd, &raw1, n1);
+  CU_ASSERT_FATAL (ret == 0);
+  ret = dds_return_loan (rd, &raw2, n2);
+  CU_ASSERT_FATAL (ret == 0);
+
+  ret = dds_delete (pp);
+  CU_ASSERT_FATAL (ret == 0);
 }

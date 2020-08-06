@@ -18,41 +18,51 @@ PREPEND(srcs_ddsi "${CMAKE_CURRENT_LIST_DIR}/src"
     ddsi_raweth.c
     ddsi_ipaddr.c
     ddsi_mcgroup.c
+    ddsi_security_util.c
+    ddsi_security_omg.c
+    ddsi_portmapping.c
+    ddsi_handshake.c
     ddsi_serdata.c
     ddsi_serdata_default.c
+    ddsi_serdata_pserop.c
+    ddsi_serdata_plist.c
     ddsi_sertopic.c
     ddsi_sertopic_default.c
-    ddsi_rhc_plugin.c
+    ddsi_sertopic_pserop.c
+    ddsi_sertopic_plist.c
+    ddsi_statistics.c
     ddsi_iid.c
     ddsi_tkmap.c
     ddsi_vendor.c
+    ddsi_threadmon.c
+    ddsi_rhc.c
+    ddsi_pmd.c
+    ddsi_entity_index.c
+    ddsi_deadline.c
+    ddsi_deliver_locally.c
+    ddsi_plist.c
+    ddsi_cdrstream.c
+    ddsi_time.c
+    ddsi_ownip.c
+    ddsi_acknack.c
     q_addrset.c
     q_bitset_inlines.c
     q_bswap.c
-    q_bswap_inlines.c
     q_config.c
     q_ddsi_discovery.c
     q_debmon.c
     q_entity.c
-    q_ephash.c
     q_gc.c
     q_init.c
     q_lat_estim.c
     q_lease.c
-    q_md5.c
     q_misc.c
-    q_nwif.c
     q_pcap.c
-    q_plist.c
     q_qosmatch.c
     q_radmin.c
     q_receive.c
-    q_security.c
-    q_servicelease.c
     q_sockwaitset.c
     q_thread.c
-    q_thread_inlines.c
-    q_time.c
     q_transmit.c
     q_inverse_uint32_set.c
     q_whc.c
@@ -61,10 +71,17 @@ PREPEND(srcs_ddsi "${CMAKE_CURRENT_LIST_DIR}/src"
     q_freelist.c
     sysdeps.c
 )
+if(ENABLE_LIFESPAN)
+  list(APPEND srcs_ddsi "${CMAKE_CURRENT_LIST_DIR}/src/ddsi_lifespan.c")
+endif()
+
+if(ENABLE_DEADLINE_MISSED)
+  list(APPEND srcs_ddsi "${CMAKE_CURRENT_LIST_DIR}/src/ddsi_deadline.c")
+endif()
 
 # The includes should reside close to the code. As long as that's not the case,
 # pull them in from this CMakeLists.txt.
-PREPEND(hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/ddsi"
+PREPEND(hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/dds/ddsi"
     ddsi_ssl.h
     ddsi_tcp.h
     ddsi_tran.h
@@ -72,14 +89,37 @@ PREPEND(hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/ddsi"
     ddsi_raweth.h
     ddsi_ipaddr.h
     ddsi_mcgroup.h
+    ddsi_plist_generic.h
+    ddsi_security_util.h
+    ddsi_security_omg.h
+    ddsi_portmapping.h
+    ddsi_handshake.h    
     ddsi_serdata.h
     ddsi_sertopic.h
     ddsi_serdata_default.h
-    ddsi_rhc_plugin.h
+    ddsi_serdata_pserop.h
+    ddsi_serdata_plist.h
+    ddsi_statistics.h
     ddsi_iid.h
     ddsi_tkmap.h
     ddsi_vendor.h
-    probes-constants.h
+    ddsi_threadmon.h
+    ddsi_builtin_topic_if.h
+    ddsi_rhc.h
+    ddsi_guid.h
+    ddsi_keyhash.h
+    ddsi_entity_index.h
+    ddsi_deadline.h
+    ddsi_deliver_locally.h
+    ddsi_domaingv.h
+    ddsi_plist.h
+    ddsi_xqos.h
+    ddsi_cdrstream.h
+    ddsi_time.h
+    ddsi_ownip.h
+    ddsi_cfgunits.h
+    ddsi_cfgelems.h
+    ddsi_acknack.h
     q_addrset.h
     q_bitset.h
     q_bswap.h
@@ -87,48 +127,62 @@ PREPEND(hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/ddsi"
     q_ddsi_discovery.h
     q_debmon.h
     q_entity.h
-    q_ephash.h
-    q_error.h
     q_feature_check.h
     q_freelist.h
     q_gc.h
-    q_globals.h
     q_hbcontrol.h
     q_lat_estim.h
     q_lease.h
     q_log.h
-    q_md5.h
     q_misc.h
-    q_nwif.h
     q_pcap.h
-    q_plist.h
     q_protocol.h
     q_qosmatch.h
     q_radmin.h
     q_receive.h
     q_rtps.h
-    q_security.h
-    q_servicelease.h
     q_sockwaitset.h
-    q_static_assert.h
     q_thread.h
-    q_time.h
     q_transmit.h
     q_inverse_uint32_set.h
     q_unused.h
     q_whc.h
     q_xevent.h
     q_xmsg.h
-    q_xqos.h
     sysdeps.h
 )
+if(ENABLE_LIFESPAN)
+  list(APPEND hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/dds/ddsi/ddsi_lifespan.h")
+endif()
+if(ENABLE_DEADLINE_MISSED)
+  list(APPEND hdrs_private_ddsi "${CMAKE_CURRENT_LIST_DIR}/include/dds/ddsi/ddsi_deadline.h")
+endif()
 
 target_sources(ddsc
-    PRIVATE
-        ${srcs_ddsi}
-        ${hdrs_private_ddsi}
-)
+  PRIVATE ${srcs_ddsi} ${hdrs_private_ddsi})
+
+if(ENABLE_SECURITY)
+  PREPEND(security_srcs "${CMAKE_CURRENT_LIST_DIR}/src"
+          ddsi_security_msg.c
+          ddsi_security_exchange.c)
+
+  PREPEND(security_hdrs "${CMAKE_CURRENT_LIST_DIR}/include/dds/ddsi"
+          ddsi_security_msg.h
+	  ddsi_security_exchange.h)
+
+  target_sources(ddsc
+    PRIVATE ${security_srcs} ${security_hdrs})
+endif()
 
 target_include_directories(ddsc
-    PRIVATE
-        "${CMAKE_CURRENT_LIST_DIR}/include")
+  PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+
+install(
+  DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/include/"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT dev)
+
+# TODO: improve test inclusion.
+if((BUILD_TESTING) AND ((NOT DEFINED MSVC_VERSION) OR (MSVC_VERSION GREATER "1800")))
+  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/tests")
+endif()

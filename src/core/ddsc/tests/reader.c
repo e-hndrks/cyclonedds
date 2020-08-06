@@ -10,13 +10,14 @@
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
 #include <assert.h>
+#include <limits.h>
 
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "Space.h"
-#include "RoundTrip.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/misc.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -61,16 +62,6 @@ static void*              g_samples[MAX_SAMPLES];
 static Space_Type1        g_data[MAX_SAMPLES];
 static dds_sample_info_t  g_info[MAX_SAMPLES];
 
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
-
 static void
 reader_init(void)
 {
@@ -91,7 +82,7 @@ reader_init(void)
     g_waitset = dds_create_waitset(g_participant);
     CU_ASSERT_FATAL(g_waitset > 0);
 
-    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_topic_name("ddsc_reader_test", name, sizeof name), NULL, NULL);
+    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_unique_topic_name("ddsc_reader_test", name, sizeof name), NULL, NULL);
     CU_ASSERT_FATAL(g_topic > 0);
 
     /* Create a reader that keeps last sample of all instances. */
@@ -234,11 +225,11 @@ CU_Test(ddsc_reader_create, invalid_qos_participant, .init=reader_init, .fini=re
     dds_entity_t rdr;
     dds_qos_t *qos = dds_create_qos();
     /* Set invalid reader data lifecycle policy */
-    OS_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
     dds_qset_reader_data_lifecycle(qos, DDS_SECS(-1), DDS_SECS(-1));
-    OS_WARNING_MSVC_ON(28020);
+    DDSRT_WARNING_MSVC_ON(28020);
     rdr = dds_create_reader(g_participant, g_topic, qos, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(rdr), DDS_RETCODE_INCONSISTENT_POLICY);
+    CU_ASSERT_EQUAL_FATAL(rdr, DDS_RETCODE_BAD_PARAMETER);
     dds_delete_qos(qos);
 }
 /*************************************************************************************************/
@@ -249,11 +240,11 @@ CU_Test(ddsc_reader_create, invalid_qos_subscriber, .init=reader_init, .fini=rea
     dds_entity_t rdr;
     dds_qos_t *qos = dds_create_qos();
     /* Set invalid reader data lifecycle policy */
-    OS_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
     dds_qset_reader_data_lifecycle(qos, DDS_SECS(-1), DDS_SECS(-1));
-    OS_WARNING_MSVC_ON(28020);
+    DDSRT_WARNING_MSVC_ON(28020);
     rdr = dds_create_reader(g_subscriber, g_topic, qos, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(rdr), DDS_RETCODE_INCONSISTENT_POLICY);
+    CU_ASSERT_EQUAL_FATAL(rdr, DDS_RETCODE_BAD_PARAMETER);
     dds_delete_qos(qos);
 }
 /*************************************************************************************************/
@@ -270,11 +261,54 @@ CU_Theory((dds_entity_t *par, dds_entity_t *top), ddsc_reader_create, non_partic
      * actually the topic. So, don't test that permutation. */
     CU_ASSERT_FATAL((par != &g_participant) || (top != &g_topic));
     rdr = dds_create_reader(*par, *top, NULL, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(rdr), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(rdr, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
+/*************************************************************************************************/
+CU_Test(ddsc_reader_create, wrong_participant, .init=reader_init, .fini=reader_fini)
+{
+    dds_entity_t participant2 = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
+    CU_ASSERT_FATAL(participant2 > 0);
+    dds_entity_t reader = dds_create_reader(participant2, g_topic, NULL, NULL);
+    CU_ASSERT_EQUAL_FATAL(reader, DDS_RETCODE_BAD_PARAMETER);
+    dds_delete(participant2);
+}
+/*************************************************************************************************/
 
+/*************************************************************************************************/
+CU_Test(ddsc_reader_create, participant_mismatch)
+{
+    dds_entity_t par1 = 0;
+    dds_entity_t par2 = 0;
+    dds_entity_t sub1 = 0;
+    dds_entity_t top2 = 0;
+    dds_entity_t reader = 0;
+    char name[100];
+
+    par1 = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
+    CU_ASSERT_FATAL(par1 > 0);
+    par2 = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
+    CU_ASSERT_FATAL(par2 > 0);
+
+    sub1 = dds_create_subscriber(par1, NULL, NULL);
+    CU_ASSERT_FATAL(sub1 > 0);
+
+    top2 = dds_create_topic(par2, &Space_Type1_desc, create_unique_topic_name("ddsc_reader_participant_mismatch", name, sizeof name), NULL, NULL);
+    CU_ASSERT_FATAL(top2 > 0);
+
+    /* Create reader with participant mismatch. */
+    reader = dds_create_reader(sub1, top2, NULL, NULL);
+
+    /* Expect the creation to have failed. */
+    CU_ASSERT_FATAL(reader <= 0);
+
+    dds_delete(top2);
+    dds_delete(sub1);
+    dds_delete(par2);
+    dds_delete(par1);
+}
+/*************************************************************************************************/
 
 
 
@@ -304,7 +338,7 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
      * However, that's not the case yet. So don't test it. */
     if (buf != g_loans) {
         ret = dds_read(g_reader, buf, si, bufsz, maxs);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -313,15 +347,14 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read(rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -333,7 +366,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read, non_readers, .init=reader_init, .fini=
 {
     dds_return_t ret;
     ret = dds_read(*rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -344,7 +377,7 @@ CU_Test(ddsc_read, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_read(g_reader, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -417,21 +450,20 @@ CU_Theory((void **buf, dds_sample_info_t *si, uint32_t maxs), ddsc_read_wl, inva
      * invalid. So, don't test that. */
     CU_ASSERT_FATAL((buf != g_loans) || (si != g_info) || (maxs == 0));
     ret = dds_read_wl(g_reader, buf, si, maxs);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read_wl, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read_wl(rdr, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -443,7 +475,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_wl, non_readers, .init=reader_init, .fi
 {
     dds_return_t ret;
     ret = dds_read_wl(*rdr, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -454,7 +486,7 @@ CU_Test(ddsc_read_wl, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_read_wl(g_reader, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -538,7 +570,7 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
      * However, that's not the case yet. So don't test it. */
     if (buf != g_loans) {
         ret = dds_read_mask(g_reader, buf, si, bufsz, maxs, mask);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -547,16 +579,15 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_mask, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read_mask, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read_mask(rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -569,7 +600,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_mask, non_readers, .init=reader_init, .
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     dds_return_t ret;
     ret = dds_read_mask(*rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -581,7 +612,7 @@ CU_Test(ddsc_read_mask, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_read_mask(g_reader, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1089,22 +1120,21 @@ CU_Theory((void **buf, dds_sample_info_t *si, uint32_t maxs), ddsc_read_mask_wl,
      * invalid. So, don't test that. */
     CU_ASSERT_FATAL((buf != g_loans) || (si != g_info) || (maxs == 0));
     ret = dds_read_mask_wl(g_reader, buf, si, maxs, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_mask_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_read_mask_wl, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_read_mask_wl(rdr, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1117,7 +1147,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_read_mask_wl, non_readers, .init=reader_init
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     dds_return_t ret;
     ret = dds_read_mask_wl(*rdr, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1129,7 +1159,7 @@ CU_Test(ddsc_read_mask_wl, already_deleted, .init=reader_init, .fini=reader_fini
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_read_mask_wl(g_reader, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1674,7 +1704,7 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
      * However, that's not the case yet. So don't test it. */
     if (buf != g_loans) {
         ret = dds_take(g_reader, buf, si, bufsz, maxs);
-        CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -1683,15 +1713,14 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take(rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1703,7 +1732,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take, non_readers, .init=reader_init, .fini=
 {
     dds_return_t ret;
     ret = dds_take(*rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1714,7 +1743,7 @@ CU_Test(ddsc_take, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to take with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_take(g_reader, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1787,21 +1816,20 @@ CU_Theory((void **buf, dds_sample_info_t *si, uint32_t maxs), ddsc_take_wl, inva
      * invalid. So, don't test that. */
     CU_ASSERT_FATAL((buf != g_loans) || (si != g_info) || (maxs == 0));
     ret = dds_take_wl(g_reader, buf, si, maxs);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take_wl, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take_wl(rdr, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1813,7 +1841,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_wl, non_readers, .init=reader_init, .fi
 {
     dds_return_t ret;
     ret = dds_take_wl(*rdr, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1824,7 +1852,7 @@ CU_Test(ddsc_take_wl, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_take_wl(g_reader, g_loans, g_info, MAX_SAMPLES);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1909,7 +1937,7 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
      * However, that's not the case yet. So don't test it. */
     if (buf != g_loans) {
         ret = dds_take_mask(g_reader, buf, si, bufsz, maxs, mask);
-        CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+        CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
     } else {
         CU_PASS("Skipped");
     }
@@ -1918,16 +1946,15 @@ CU_Theory((void **buf, dds_sample_info_t *si, size_t bufsz, uint32_t maxs), ddsc
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_mask, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take_mask, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take_mask(rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1940,7 +1967,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_mask, non_readers, .init=reader_init, .
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     dds_return_t ret;
     ret = dds_take_mask(*rdr, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1952,7 +1979,7 @@ CU_Test(ddsc_take_mask, already_deleted, .init=reader_init, .fini=reader_fini)
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_take_mask(g_reader, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -2473,7 +2500,7 @@ CU_Test(ddsc_take_mask, take_instance_last_sample)
     CU_ASSERT_FATAL(g_participant > 0);
     g_waitset = dds_create_waitset(g_participant);
     CU_ASSERT_FATAL(g_waitset > 0);
-    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_topic_name("ddsc_reader_test", name, 100), NULL, NULL);
+    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_unique_topic_name("ddsc_reader_test", name, 100), NULL, NULL);
     CU_ASSERT_FATAL(g_topic > 0);
     g_reader = dds_create_reader(g_participant, g_topic, g_qos, NULL);
     CU_ASSERT_FATAL(g_reader > 0);
@@ -2593,22 +2620,21 @@ CU_Theory((void **buf, dds_sample_info_t *si, uint32_t maxs), ddsc_take_mask_wl,
      * invalid. So, don't test that. */
     CU_ASSERT_FATAL((buf != g_loans) || (si != g_info) || (maxs == 0));
     ret = dds_take_mask_wl(g_reader, buf, si, maxs, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_mask_wl, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_take_mask_wl, invalid_readers, .init=reader_init, .fini=reader_fini)
 {
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
 
     ret = dds_take_mask_wl(rdr, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -2621,7 +2647,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_take_mask_wl, non_readers, .init=reader_init
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     dds_return_t ret;
     ret = dds_take_mask_wl(*rdr, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -2633,7 +2659,7 @@ CU_Test(ddsc_take_mask_wl, already_deleted, .init=reader_init, .fini=reader_fini
     /* Try to read with a deleted reader. */
     dds_delete(g_reader);
     ret = dds_take_mask_wl(g_reader, g_loans, g_info, MAX_SAMPLES, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 

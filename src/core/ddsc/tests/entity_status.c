@@ -9,12 +9,14 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
+#include <limits.h>
 #include <stdlib.h>
-#include "CUnit/Theory.h"
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "RoundTrip.h"
 
+#include "dds/dds.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+
+#include "test_common.h"
 
 /****************************************************************************
  * Test globals.
@@ -39,7 +41,14 @@ static dds_time_t waitTimeout = DDS_SECS (2);
 static dds_time_t shortTimeout = DDS_MSECS (10);
 static dds_publication_matched_status_t publication_matched;
 static dds_subscription_matched_status_t subscription_matched;
-static dds_resource_limits_qospolicy_t resource_limits = {1,1,1};
+
+struct reslimits {
+  int32_t max_samples;
+  int32_t max_instances;
+  int32_t max_samples_per_instance;
+};
+
+static struct reslimits resource_limits = {1,1,1};
 
 static dds_instance_handle_t reader_i_hdl = 0;
 static dds_instance_handle_t writer_i_hdl = 0;
@@ -47,15 +56,6 @@ static dds_instance_handle_t writer_i_hdl = 0;
 /****************************************************************************
  * Test initializations and teardowns.
  ****************************************************************************/
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
 
 static void
 init_entity_status(void)
@@ -65,7 +65,7 @@ init_entity_status(void)
     participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     CU_ASSERT(participant > 0);
 
-    top = dds_create_topic(participant, &RoundTripModule_DataType_desc, create_topic_name("ddsc_status_test", topicName, 100), NULL, NULL);
+    top = dds_create_topic(participant, &RoundTripModule_DataType_desc, create_unique_topic_name("ddsc_status_test", topicName, 100), NULL, NULL);
     CU_ASSERT(top > 0);
 
     qos = dds_create_qos();
@@ -136,10 +136,19 @@ CU_Test(ddsc_entity_status, publication_matched, .init=init_entity_status, .fini
     CU_ASSERT_EQUAL_FATAL(publication_matched.total_count_change,   1);
     CU_ASSERT_EQUAL_FATAL(publication_matched.last_subscription_handle, reader_i_hdl);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_publication_matched_status(wri, &publication_matched);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.current_count,        1);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.current_count_change, 0);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.total_count,          1);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.total_count_change,   0);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.last_subscription_handle, reader_i_hdl);
+
     /* Getting the status should have reset the trigger,
      * meaning that the wait should timeout. */
     ret = dds_waitset_wait(waitSetwr, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     /* Un-match the publication by deleting the reader. */
     dds_delete(rea);
@@ -153,6 +162,15 @@ CU_Test(ddsc_entity_status, publication_matched, .init=init_entity_status, .fini
     CU_ASSERT_EQUAL_FATAL(publication_matched.current_count_change, -1);
     CU_ASSERT_EQUAL_FATAL(publication_matched.total_count,           1);
     CU_ASSERT_EQUAL_FATAL(publication_matched.total_count_change,    0);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.last_subscription_handle, reader_i_hdl);
+
+    /* Second call should reset the changed count. */
+    ret = dds_get_publication_matched_status(wri, &publication_matched);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.current_count,        0);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.current_count_change, 0);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.total_count,          1);
+    CU_ASSERT_EQUAL_FATAL(publication_matched.total_count_change,   0);
     CU_ASSERT_EQUAL_FATAL(publication_matched.last_subscription_handle, reader_i_hdl);
 }
 
@@ -173,10 +191,19 @@ CU_Test(ddsc_entity_status, subscription_matched, .init=init_entity_status, .fin
     CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count_change,   1);
     CU_ASSERT_EQUAL_FATAL(subscription_matched.last_publication_handle, writer_i_hdl);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_subscription_matched_status(rea, &subscription_matched);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.current_count,        1);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.current_count_change, 0);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count,          1);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count_change,   0);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.last_publication_handle, writer_i_hdl);
+
     /* Getting the status should have reset the trigger,
      * meaning that the wait should timeout. */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     /* Un-match the subscription by deleting the writer. */
     dds_delete(wri);
@@ -190,6 +217,15 @@ CU_Test(ddsc_entity_status, subscription_matched, .init=init_entity_status, .fin
     CU_ASSERT_EQUAL_FATAL(subscription_matched.current_count_change, -1);
     CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count,           1);
     CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count_change,    0);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.last_publication_handle, writer_i_hdl);
+
+    /* Second call should reset the changed count. */
+    ret = dds_get_subscription_matched_status(rea, &subscription_matched);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.current_count,        0);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.current_count_change, 0);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count,          1);
+    CU_ASSERT_EQUAL_FATAL(subscription_matched.total_count_change,   0);
     CU_ASSERT_EQUAL_FATAL(subscription_matched.last_publication_handle, writer_i_hdl);
 }
 
@@ -229,9 +265,16 @@ CU_Test(ddsc_entity, incompatible_qos, .init=init_entity_status, .fini=fini_enti
     CU_ASSERT_EQUAL_FATAL(req_incompatible_qos.total_count_change,    1);
     CU_ASSERT_EQUAL_FATAL(req_incompatible_qos.last_policy_id, DDS_DURABILITY_QOS_POLICY_ID);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_requested_incompatible_qos_status (reader2, &req_incompatible_qos);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(req_incompatible_qos.total_count,           1);
+    CU_ASSERT_EQUAL_FATAL(req_incompatible_qos.total_count_change,    0);
+    CU_ASSERT_EQUAL_FATAL(req_incompatible_qos.last_policy_id, DDS_DURABILITY_QOS_POLICY_ID);
+
     /*Getting the status should have reset the trigger, waitset should timeout */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     /* Wait for offered incompatible QoS status */
     ret = dds_waitset_wait(waitSetwr, wsresults, wsresultsize, waitTimeout);
@@ -242,9 +285,16 @@ CU_Test(ddsc_entity, incompatible_qos, .init=init_entity_status, .fini=fini_enti
     CU_ASSERT_EQUAL_FATAL(off_incompatible_qos.total_count_change,    1);
     CU_ASSERT_EQUAL_FATAL(off_incompatible_qos.last_policy_id, DDS_DURABILITY_QOS_POLICY_ID);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_offered_incompatible_qos_status (wri, &off_incompatible_qos);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(off_incompatible_qos.total_count,           1);
+    CU_ASSERT_EQUAL_FATAL(off_incompatible_qos.total_count_change,    0);
+    CU_ASSERT_EQUAL_FATAL(off_incompatible_qos.last_policy_id, DDS_DURABILITY_QOS_POLICY_ID);
+
     /*Getting the status should have reset the trigger, waitset should timeout */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     ret = dds_waitset_detach(waitSetrd, reader2);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
@@ -276,9 +326,18 @@ CU_Test(ddsc_entity, liveliness_changed, .init=init_entity_status, .fini=fini_en
     CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count_change,0);
     CU_ASSERT_EQUAL_FATAL(liveliness_changed.last_publication_handle, writer_i_hdl);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_liveliness_changed_status (rea, &liveliness_changed);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count,           1);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count_change,    0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count,       0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count_change,0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.last_publication_handle, writer_i_hdl);
+
     /*Getting the status should have reset the trigger, waitset should timeout */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     /* Reset writer */
     ret = dds_waitset_detach(waitSetwr, wri);
@@ -292,9 +351,18 @@ CU_Test(ddsc_entity, liveliness_changed, .init=init_entity_status, .fini=fini_en
     ret = dds_get_liveliness_changed_status (rea, &liveliness_changed);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count,           0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count_change,   -1);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count,       0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count_change,0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.last_publication_handle, writer_i_hdl);
+
+    /* Second call should reset the changed count. */
+    ret = dds_get_liveliness_changed_status (rea, &liveliness_changed);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count,           0);
     CU_ASSERT_EQUAL_FATAL(liveliness_changed.alive_count_change,    0);
-    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count,       1);
-    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count_change,1);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count,       0);
+    CU_ASSERT_EQUAL_FATAL(liveliness_changed.not_alive_count_change,0);
     CU_ASSERT_EQUAL_FATAL(liveliness_changed.last_publication_handle, writer_i_hdl);
 }
 
@@ -337,9 +405,16 @@ CU_Test(ddsc_entity, sample_rejected, .init=init_entity_status, .fini=fini_entit
     CU_ASSERT_EQUAL_FATAL(sample_rejected.total_count_change, 4);
     CU_ASSERT_EQUAL_FATAL(sample_rejected.last_reason, DDS_REJECTED_BY_SAMPLES_LIMIT);
 
+    /* Second call should reset the changed count. */
+    ret = dds_get_sample_rejected_status (rea, &sample_rejected);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(sample_rejected.total_count,        4);
+    CU_ASSERT_EQUAL_FATAL(sample_rejected.total_count_change, 0);
+    CU_ASSERT_EQUAL_FATAL(sample_rejected.last_reason, DDS_REJECTED_BY_SAMPLES_LIMIT);
+
     /*Getting the status should have reset the trigger, waitset should timeout */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 }
 
 #if 0
@@ -368,7 +443,7 @@ Test(ddsc_entity, inconsistent_topic)
 
     /*Getting the status should have reset the trigger, waitset should timeout */
     status = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), 0, "returned %d", dds_err_nr(status));
+    CU_ASSERT_EQUAL_FATAL(status, 0, "returned %d", status);
 
     /* Wait for sub inconsistent topic status callback */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, waitTimeout);
@@ -379,7 +454,7 @@ Test(ddsc_entity, inconsistent_topic)
 
     /*Getting the status should have reset the trigger, waitset should timeout */
     status = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), 0);
+    CU_ASSERT_EQUAL_FATAL(status, 0);
 
     dds_delete(top);
 }
@@ -424,12 +499,18 @@ CU_Test(ddsc_entity, sample_lost, .init=init_entity_status, .fini=fini_entity_st
     CU_ASSERT_EQUAL_FATAL(ret, (dds_return_t)wsresultsize);
     ret = dds_get_sample_lost_status (rea, &sample_lost);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
-    CU_ASSERT_EQUAL_FATAL(sample_lost.total_count,          1);
+    CU_ASSERT_EQUAL_FATAL(sample_lost.total_count,        1);
     CU_ASSERT_EQUAL_FATAL(sample_lost.total_count_change, 1);
+
+    /* Second call should reset the changed count. */
+    ret = dds_get_sample_lost_status (rea, &sample_lost);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(sample_lost.total_count,        1);
+    CU_ASSERT_EQUAL_FATAL(sample_lost.total_count_change, 0);
 
     /*Getting the status should have reset the trigger, waitset should timeout */
     ret = dds_waitset_wait(waitSetrd, wsresults, wsresultsize, shortTimeout);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
 }
 
@@ -587,15 +668,14 @@ CU_Test(ddsc_entity, all_data_available, .init=init_entity_status, .fini=fini_en
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_enabled_status, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_get_enabled_status, bad_param)
+CU_Theory((dds_entity_t e), ddsc_get_enabled_status, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t mask;
-    dds_return_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_status_mask(e, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_get_enabled_status, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
@@ -603,14 +683,14 @@ CU_Test(ddsc_get_enabled_status, deleted_reader, .init=init_entity_status, .fini
     uint32_t mask;
     dds_delete(rea);
     ret = dds_get_status_mask(rea, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_get_enabled_status, illegal, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t mask;
     ret = dds_get_status_mask(waitSetrd, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_TheoryDataPoints(ddsc_get_enabled_status, status_ok) = {
@@ -626,27 +706,25 @@ CU_Theory((dds_entity_t *e), ddsc_get_enabled_status, status_ok, .init=init_enti
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_set_enabled_status, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_set_enabled_status, bad_param)
+CU_Theory((dds_entity_t e), ddsc_set_enabled_status, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
-
     ret = dds_set_status_mask(e, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_set_enabled_status, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_delete(rea);
     ret = dds_set_status_mask(rea, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_set_enabled_status, illegal, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_set_status_mask(waitSetrd, 0);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_TheoryDataPoints(ddsc_set_enabled_status, status_ok) = {
@@ -661,15 +739,14 @@ CU_Theory((dds_entity_t *entity), ddsc_set_enabled_status, status_ok, .init=init
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_read_status, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_read_status, bad_param)
+CU_Theory((dds_entity_t e), ddsc_read_status, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_read_status(e, &status, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_read_status, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
@@ -677,14 +754,14 @@ CU_Test(ddsc_read_status, deleted_reader, .init=init_entity_status, .fini=fini_e
     uint32_t status;
     dds_delete(rea);
     ret = dds_read_status(rea, &status, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_read_status, illegal, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
     ret = dds_read_status(waitSetrd, &status, 0);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 CU_TheoryDataPoints(ddsc_read_status, status_ok) = {
         CU_DataPoints(dds_entity_t *,&rea, &wri, &participant, &top, &publisher, &subscriber),
@@ -700,28 +777,27 @@ CU_Test(ddsc_read_status, invalid_status_on_reader, .init=init_entity_status, .f
 {
     uint32_t status;
     ret = dds_read_status(rea, &status, DDS_PUBLICATION_MATCHED_STATUS);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_read_status, invalid_status_on_writer, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
     ret = dds_read_status(wri, &status, DDS_SUBSCRIPTION_MATCHED_STATUS);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_take_status, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_take_status, bad_param)
+CU_Theory((dds_entity_t e), ddsc_take_status, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_take_status(e, &status, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_take_status, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
@@ -729,13 +805,13 @@ CU_Test(ddsc_take_status, deleted_reader, .init=init_entity_status, .fini=fini_e
     uint32_t status;
     dds_delete(rea);
     ret = dds_take_status(rea, &status, 0 /*mask*/);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 CU_Test(ddsc_take_status, illegal, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
     ret = dds_take_status(waitSetrd, &status, 0);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_TheoryDataPoints(ddsc_take_status, status_ok) = {
@@ -752,15 +828,14 @@ CU_Theory((dds_entity_t *e), ddsc_take_status, status_ok, .init=init_entity_stat
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_status_changes, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_get_status_changes, bad_param)
+CU_Theory((dds_entity_t e), ddsc_get_status_changes, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_status_changes(e, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_get_status_changes, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
@@ -768,14 +843,14 @@ CU_Test(ddsc_get_status_changes, deleted_reader, .init=init_entity_status, .fini
     uint32_t status;
     dds_delete(rea);
     ret = dds_get_status_changes(rea, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_get_status_changes, illegal, .init=init_entity_status, .fini=fini_entity_status)
 {
     uint32_t status;
     ret = dds_get_status_changes(waitSetrd, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_TheoryDataPoints(ddsc_get_status_changes, status_ok) = {
@@ -791,21 +866,19 @@ CU_Theory((dds_entity_t *e), ddsc_get_status_changes, status_ok, .init=init_enti
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_triggered, bad_param) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t e), ddsc_triggered, bad_param)
+CU_Theory((dds_entity_t e), ddsc_triggered, bad_param, .init=init_entity_status, .fini=fini_entity_status)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
-
     ret = dds_triggered(e);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_triggered, deleted_reader, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_delete(rea);
     ret = dds_triggered(rea);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_TheoryDataPoints(ddsc_triggered, status_ok) = {
@@ -823,7 +896,7 @@ CU_Test(ddsc_get_inconsistent_topic_status, inconsistent_topic_status, .init=ini
 {
     dds_inconsistent_topic_status_t inconsistent_topic_status;
     ret = dds_get_inconsistent_topic_status(top, &inconsistent_topic_status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(inconsistent_topic_status.total_count,          0);
     CU_ASSERT_EQUAL_FATAL(inconsistent_topic_status.total_count_change,   0);
 }
@@ -831,15 +904,14 @@ CU_Test(ddsc_get_inconsistent_topic_status, inconsistent_topic_status, .init=ini
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_inconsistent_topic_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t topic), ddsc_get_inconsistent_topic_status, bad_params)
+CU_Theory((dds_entity_t topic), ddsc_get_inconsistent_topic_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_inconsistent_topic_status_t topic_status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_inconsistent_topic_status(topic, &topic_status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -848,7 +920,7 @@ CU_Test(ddsc_get_inconsistent_topic_status, null, .init=init_entity_status, .fin
 {
     dds_set_status_mask(top, 0);
     ret = dds_get_inconsistent_topic_status(top, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -859,7 +931,7 @@ CU_TheoryDataPoints(ddsc_get_inconsistent_topic_status, non_topics) = {
 CU_Theory((dds_entity_t *topic), ddsc_get_inconsistent_topic_status, non_topics, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_inconsistent_topic_status(*topic, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -868,21 +940,20 @@ CU_Test(ddsc_get_inconsistent_topic_status, deleted_topic, .init=init_entity_sta
 {
     dds_delete(top);
     ret = dds_get_inconsistent_topic_status(top, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_publication_matched_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t writer), ddsc_get_publication_matched_status, bad_params)
+CU_Theory((dds_entity_t writer), ddsc_get_publication_matched_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_publication_matched_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_publication_matched_status(writer, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -891,7 +962,7 @@ CU_Test(ddsc_get_publication_matched_status, null, .init=init_entity_status, .fi
 {
     dds_set_status_mask(wri, 0);
     ret = dds_get_publication_matched_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -902,7 +973,7 @@ CU_TheoryDataPoints(ddsc_get_publication_matched_status, non_writers) = {
 CU_Theory((dds_entity_t *writer), ddsc_get_publication_matched_status, non_writers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_publication_matched_status(*writer, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -911,7 +982,7 @@ CU_Test(ddsc_get_publication_matched_status, deleted_writer, .init=init_entity_s
 {
     dds_delete(wri);
     ret = dds_get_publication_matched_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -920,7 +991,7 @@ CU_Test(ddsc_get_liveliness_lost_status, liveliness_lost_status, .init=init_enti
 {
     dds_liveliness_lost_status_t liveliness_lost_status;
     ret = dds_get_liveliness_lost_status(wri, &liveliness_lost_status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(liveliness_lost_status.total_count,        0);
     CU_ASSERT_EQUAL_FATAL(liveliness_lost_status.total_count_change, 0);
 }
@@ -928,15 +999,14 @@ CU_Test(ddsc_get_liveliness_lost_status, liveliness_lost_status, .init=init_enti
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_liveliness_lost_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t writer), ddsc_get_liveliness_lost_status, bad_params)
+CU_Theory((dds_entity_t writer), ddsc_get_liveliness_lost_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_liveliness_lost_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_liveliness_lost_status(writer, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -945,7 +1015,7 @@ CU_Test(ddsc_get_liveliness_lost_status, null, .init=init_entity_status, .fini=f
 {
     dds_set_status_mask(wri, 0);
     ret = dds_get_liveliness_lost_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -956,7 +1026,7 @@ CU_TheoryDataPoints(ddsc_get_liveliness_lost_status, non_writers) = {
 CU_Theory((dds_entity_t *writer), ddsc_get_liveliness_lost_status, non_writers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_liveliness_lost_status(*writer, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -965,7 +1035,7 @@ CU_Test(ddsc_get_liveliness_lost_status, deleted_writer, .init=init_entity_statu
 {
     dds_delete(wri);
     ret = dds_get_liveliness_lost_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -974,7 +1044,7 @@ CU_Test(ddsc_get_offered_deadline_missed_status, offered_deadline_missed_status,
 {
     dds_offered_deadline_missed_status_t offered_deadline_missed_status;
     ret = dds_get_offered_deadline_missed_status(wri, &offered_deadline_missed_status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(offered_deadline_missed_status.total_count,            0);
     CU_ASSERT_EQUAL_FATAL(offered_deadline_missed_status.total_count_change,     0);
     CU_ASSERT_EQUAL_FATAL(offered_deadline_missed_status.last_instance_handle,   0);
@@ -983,15 +1053,14 @@ CU_Test(ddsc_get_offered_deadline_missed_status, offered_deadline_missed_status,
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_offered_deadline_missed_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t writer), ddsc_get_offered_deadline_missed_status, bad_params)
+CU_Theory((dds_entity_t writer), ddsc_get_offered_deadline_missed_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_offered_deadline_missed_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_offered_deadline_missed_status(writer, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1000,7 +1069,7 @@ CU_Test(ddsc_get_offered_deadline_missed_status, null, .init=init_entity_status,
 {
     dds_set_status_mask(wri, 0);
     ret = dds_get_offered_deadline_missed_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1011,7 +1080,7 @@ CU_TheoryDataPoints(ddsc_get_offered_deadline_missed_status, non_writers) = {
 CU_Theory((dds_entity_t *writer), ddsc_get_offered_deadline_missed_status, non_writers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_offered_deadline_missed_status(*writer, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1020,21 +1089,20 @@ CU_Test(ddsc_get_offered_deadline_missed_status, deleted_writer, .init=init_enti
 {
     dds_delete(wri);
     ret = dds_get_offered_deadline_missed_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_offered_incompatible_qos_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t writer), ddsc_get_offered_incompatible_qos_status, bad_params)
+CU_Theory((dds_entity_t writer), ddsc_get_offered_incompatible_qos_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_offered_incompatible_qos_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_offered_incompatible_qos_status(writer, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1043,7 +1111,7 @@ CU_Test(ddsc_get_offered_incompatible_qos_status, null, .init=init_entity_status
 {
     dds_set_status_mask(wri, 0);
     ret = dds_get_offered_incompatible_qos_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1054,7 +1122,7 @@ CU_TheoryDataPoints(ddsc_get_offered_incompatible_qos_status, non_writers) = {
 CU_Theory((dds_entity_t *writer), ddsc_get_offered_incompatible_qos_status, non_writers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_offered_incompatible_qos_status(*writer, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1063,21 +1131,20 @@ CU_Test(ddsc_get_offered_incompatible_qos_status, deleted_writer, .init=init_ent
 {
     dds_delete(wri);
     ret = dds_get_offered_incompatible_qos_status(wri, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_subscription_matched_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_subscription_matched_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_subscription_matched_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_subscription_matched_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_subscription_matched_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1086,7 +1153,7 @@ CU_Test(ddsc_get_subscription_matched_status, null, .init=init_entity_status, .f
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_subscription_matched_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1097,7 +1164,7 @@ CU_TheoryDataPoints(ddsc_get_subscription_matched_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_subscription_matched_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_subscription_matched_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1106,21 +1173,20 @@ CU_Test(ddsc_get_subscription_matched_status, deleted_reader, .init=init_entity_
 {
     dds_delete(rea);
     ret = dds_get_subscription_matched_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_liveliness_changed_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_liveliness_changed_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_liveliness_changed_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_liveliness_changed_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_liveliness_changed_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1129,7 +1195,7 @@ CU_Test(ddsc_get_liveliness_changed_status, null, .init=init_entity_status, .fin
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_liveliness_changed_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1140,7 +1206,7 @@ CU_TheoryDataPoints(ddsc_get_liveliness_changed_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_liveliness_changed_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_liveliness_changed_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1149,21 +1215,20 @@ CU_Test(ddsc_get_liveliness_changed_status, deleted_reader, .init=init_entity_st
 {
     dds_delete(rea);
     ret = dds_get_liveliness_changed_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_sample_rejected_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_sample_rejected_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_sample_rejected_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_sample_rejected_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_sample_rejected_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1172,7 +1237,7 @@ CU_Test(ddsc_get_sample_rejected_status, null, .init=init_entity_status, .fini=f
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_sample_rejected_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1183,7 +1248,7 @@ CU_TheoryDataPoints(ddsc_get_sample_rejected_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_sample_rejected_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_sample_rejected_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1192,21 +1257,20 @@ CU_Test(ddsc_get_sample_rejected_status, deleted_reader, .init=init_entity_statu
 {
     dds_delete(rea);
     ret = dds_get_sample_rejected_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_sample_lost_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_sample_lost_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_sample_lost_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_sample_lost_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_sample_lost_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1215,7 +1279,7 @@ CU_Test(ddsc_get_sample_lost_status, null, .init=init_entity_status, .fini=fini_
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_sample_lost_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1226,7 +1290,7 @@ CU_TheoryDataPoints(ddsc_get_sample_lost_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_sample_lost_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_sample_lost_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1235,7 +1299,7 @@ CU_Test(ddsc_get_sample_lost_status, deleted_reader, .init=init_entity_status, .
 {
     dds_delete(rea);
     ret = dds_get_sample_lost_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1244,7 +1308,7 @@ CU_Test(ddsc_get_requested_deadline_missed_status, requested_deadline_missed_sta
 {
     dds_requested_deadline_missed_status_t requested_deadline_missed_status;
     ret = dds_get_requested_deadline_missed_status(rea, &requested_deadline_missed_status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(requested_deadline_missed_status.total_count,           0);
     CU_ASSERT_EQUAL_FATAL(requested_deadline_missed_status.total_count_change,    0);
     CU_ASSERT_EQUAL_FATAL(requested_deadline_missed_status.last_instance_handle,  DDS_HANDLE_NIL);
@@ -1253,15 +1317,14 @@ CU_Test(ddsc_get_requested_deadline_missed_status, requested_deadline_missed_sta
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_requested_deadline_missed_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_requested_deadline_missed_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_requested_deadline_missed_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_requested_deadline_missed_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_requested_deadline_missed_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1270,7 +1333,7 @@ CU_Test(ddsc_get_requested_deadline_missed_status, null, .init=init_entity_statu
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_requested_deadline_missed_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1281,7 +1344,7 @@ CU_TheoryDataPoints(ddsc_get_requested_deadline_missed_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_requested_deadline_missed_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_requested_deadline_missed_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1290,21 +1353,20 @@ CU_Test(ddsc_get_requested_deadline_missed_status, deleted_reader, .init=init_en
 {
     dds_delete(rea);
     ret = dds_get_requested_deadline_missed_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_get_requested_incompatible_qos_status, bad_params) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
-CU_Theory((dds_entity_t reader), ddsc_get_requested_incompatible_qos_status, bad_params)
+CU_Theory((dds_entity_t reader), ddsc_get_requested_incompatible_qos_status, bad_params, .init=init_entity_status, .fini=fini_entity_status)
 {
     dds_requested_incompatible_qos_status_t status;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
 
     ret = dds_get_requested_incompatible_qos_status(reader, &status);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1313,7 +1375,7 @@ CU_Test(ddsc_get_requested_incompatible_qos_status, null, .init=init_entity_stat
 {
     dds_set_status_mask(rea, 0);
     ret = dds_get_requested_incompatible_qos_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
 }
 /*************************************************************************************************/
 
@@ -1324,7 +1386,7 @@ CU_TheoryDataPoints(ddsc_get_requested_incompatible_qos_status, non_readers) = {
 CU_Theory((dds_entity_t *reader), ddsc_get_requested_incompatible_qos_status, non_readers, .init=init_entity_status, .fini=fini_entity_status)
 {
     ret = dds_get_requested_incompatible_qos_status(*reader, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -1333,7 +1395,7 @@ CU_Test(ddsc_get_requested_incompatible_qos_status, deleted_reader, .init=init_e
 {
     dds_delete(rea);
     ret = dds_get_requested_incompatible_qos_status(rea, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 

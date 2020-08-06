@@ -12,13 +12,19 @@
 #ifndef DDS__WHC_H
 #define DDS__WHC_H
 
-#include "ddsi/q_whc.h"
+#include "dds/ddsi/q_whc.h"
 
 #if defined (__cplusplus)
 extern "C" {
 #endif
 
-struct whc *whc_new (int is_transient_local, unsigned hdepth, unsigned tldepth);
+struct ddsi_domaingv;
+struct whc_writer_info;
+struct dds_writer;
+
+struct whc *whc_new (struct ddsi_domaingv *gv, const struct whc_writer_info *wrinfo);
+struct whc_writer_info *whc_make_wrinfo (struct dds_writer *wr, const dds_qos_t *qos);
+void whc_free_wrinfo (struct whc_writer_info *);
 
 #if defined (__cplusplus)
 }

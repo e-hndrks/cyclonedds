@@ -12,9 +12,17 @@
 #ifndef DDSI_ETH_H
 #define DDSI_ETH_H
 
-#include "ddsi/ddsi_tran.h"
-#include "os/os.h"
+#include "dds/ddsi/ddsi_tran.h"
+#include "dds/ddsi/q_config.h"
 
-int ddsi_eth_enumerate_interfaces(ddsi_tran_factory_t fact, os_ifaddrs_t **ifs);
+#if defined (__cplusplus)
+extern "C" {
+#endif
+
+int ddsi_eth_enumerate_interfaces(ddsi_tran_factory_t fact, enum transport_selector transport_selector, ddsrt_ifaddrs_t **ifs);
+
+#if defined (__cplusplus)
+}
+#endif
 
 #endif /* DDSI_ETH_H */

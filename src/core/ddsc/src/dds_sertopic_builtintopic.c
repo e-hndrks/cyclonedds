@@ -14,39 +14,42 @@
 #include <assert.h>
 #include <string.h>
 
-#include "os/os.h"
-#include "ddsi/q_md5.h"
-#include "ddsi/q_bswap.h"
-#include "ddsi/q_config.h"
-#include "ddsi/q_freelist.h"
-#include "ddsi/ddsi_sertopic.h"
-#include "ddsc/dds.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/heap.h"
+#include "dds/ddsrt/md5.h"
+#include "dds/ddsi/q_config.h"
+#include "dds/ddsi/q_freelist.h"
+#include "dds/ddsi/ddsi_sertopic.h"
+#include "dds/ddsi/ddsi_iid.h"
 #include "dds__serdata_builtintopic.h"
 
 /* FIXME: sertopic /= ddstopic so a lot of stuff needs to be moved here from dds_topic.c and the free function needs to be implemented properly */
 
 struct ddsi_sertopic *new_sertopic_builtintopic (enum ddsi_sertopic_builtintopic_type type, const char *name, const char *typename)
 {
-  struct ddsi_sertopic_builtintopic *tp = os_malloc (sizeof (*tp));
-  tp->c.iid = ddsi_iid_gen();
-  tp->c.name = dds_string_dup (name);
-  tp->c.typename = dds_string_dup (typename);
-  const size_t name_typename_size = strlen (tp->c.name) + 1 + strlen (tp->c.typename) + 1;
-  tp->c.name_typename = dds_alloc (name_typename_size);
-  snprintf (tp->c.name_typename, name_typename_size, "%s/%s", tp->c.name, tp->c.typename);
-  tp->c.ops = &ddsi_sertopic_ops_builtintopic;
-  tp->c.serdata_ops = &ddsi_serdata_ops_builtintopic;
-  tp->c.serdata_basehash = ddsi_sertopic_compute_serdata_basehash (tp->c.serdata_ops);
-  tp->c.status_cb = 0;
-  tp->c.status_cb_entity = NULL;
-  os_atomic_st32 (&tp->c.refc, 1);
+  struct ddsi_sertopic_builtintopic *tp = ddsrt_malloc (sizeof (*tp));
+  ddsi_sertopic_init (&tp->c, name, typename, &ddsi_sertopic_ops_builtintopic, &ddsi_serdata_ops_builtintopic, false);
   tp->type = type;
   return &tp->c;
 }
 
-static void sertopic_builtin_deinit (struct ddsi_sertopic *tp)
+static void sertopic_builtin_free (struct ddsi_sertopic *tp)
 {
-  (void)tp;
+  ddsi_sertopic_fini (tp);
+  ddsrt_free (tp);
+}
+
+static bool sertopic_builtin_equal (const struct ddsi_sertopic *acmn, const struct ddsi_sertopic *bcmn)
+{
+  const struct ddsi_sertopic_builtintopic *a = (struct ddsi_sertopic_builtintopic *) acmn;
+  const struct ddsi_sertopic_builtintopic *b = (struct ddsi_sertopic_builtintopic *) bcmn;
+  return a->type == b->type;
+}
+
+static uint32_t sertopic_builtin_hash (const struct ddsi_sertopic *tpcmn)
+{
+  const struct ddsi_sertopic_builtintopic *tp = (struct ddsi_sertopic_builtintopic *) tpcmn;
+  return (uint32_t) tp->type;
 }
 
 static void free_pp (void *vsample)
@@ -91,7 +94,7 @@ static void sertopic_builtin_realloc_samples (void **ptrs, const struct ddsi_ser
 {
   const struct ddsi_sertopic_builtintopic *tp = (const struct ddsi_sertopic_builtintopic *)sertopic_common;
   const size_t size = get_size (tp->type);
-  char *new = dds_realloc (old, size * count);
+  char *new = (oldcount == count) ? old : dds_realloc (old, size * count);
   if (new && count > oldcount)
     memset (new + size * oldcount, 0, size * (count - oldcount));
   for (size_t i = 0; i < count; i++)
@@ -140,7 +143,9 @@ static void sertopic_builtin_free_samples (const struct ddsi_sertopic *sertopic_
 }
 
 const struct ddsi_sertopic_ops ddsi_sertopic_ops_builtintopic = {
-  .deinit = sertopic_builtin_deinit,
+  .equal = sertopic_builtin_equal,
+  .hash = sertopic_builtin_hash,
+  .free = sertopic_builtin_free,
   .zero_samples = sertopic_builtin_zero_samples,
   .realloc_samples = sertopic_builtin_realloc_samples,
   .free_samples = sertopic_builtin_free_samples

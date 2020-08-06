@@ -11,12 +11,12 @@
  */
 #include <assert.h>
 
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
-#include "Space.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/misc.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
 
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -39,16 +39,6 @@ static dds_time_t   g_present     = 0;
 static void*             g_samples[MAX_SAMPLES];
 static Space_Type1       g_data[MAX_SAMPLES];
 
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
-
 static void
 registering_init(void)
 {
@@ -67,7 +57,7 @@ registering_init(void)
     g_waitset = dds_create_waitset(g_participant);
     CU_ASSERT_FATAL(g_waitset > 0);
 
-    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_topic_name("ddsc_registering_test", name, sizeof name), qos, NULL);
+    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_unique_topic_name("ddsc_registering_test", name, sizeof name), qos, NULL);
     CU_ASSERT_FATAL(g_topic > 0);
 
     /* Create a reader that keeps one sample on three instances. */
@@ -148,7 +138,7 @@ CU_Test(ddsc_register_instance, deleted_entity, .init=registering_init, .fini=re
     dds_instance_handle_t handle;
     dds_delete(g_writer);
     ret = dds_register_instance(g_writer, &handle, g_data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 static dds_instance_handle_t hndle = 0;
@@ -164,23 +154,22 @@ CU_Theory((dds_instance_handle_t *hndl2, void *datap), ddsc_register_instance, i
     /* Only test when the combination of parameters is actually invalid.*/
     CU_ASSERT_FATAL((hndl2 == NULL) || (datap == NULL));
 
-    OS_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
     ret = dds_register_instance(g_writer, hndl2, datap);
-    OS_WARNING_MSVC_ON(6387);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    DDSRT_WARNING_MSVC_ON(6387);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_TheoryDataPoints(ddsc_register_instance, invalid_writers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t writer), ddsc_register_instance, invalid_writers, .init=registering_init, .fini=registering_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
     dds_instance_handle_t handle;
 
     ret = dds_register_instance(writer, &handle, g_data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_TheoryDataPoints(ddsc_register_instance, non_writers) = {
@@ -191,7 +180,7 @@ CU_Theory((dds_entity_t *writer), ddsc_register_instance, non_writers, .init=reg
     dds_return_t ret;
     dds_instance_handle_t handle;
     ret = dds_register_instance(*writer, &handle, g_data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_Test(ddsc_register_instance, registering_new_instance, .init=registering_init, .fini=registering_fini)

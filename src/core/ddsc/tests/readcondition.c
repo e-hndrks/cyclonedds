@@ -9,11 +9,12 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
-#include "Space.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/misc.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -57,16 +58,6 @@ static void*             g_samples[MAX_SAMPLES];
 static Space_Type1       g_data[MAX_SAMPLES];
 static dds_sample_info_t g_info[MAX_SAMPLES];
 
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
-
 static void
 readcondition_init(void)
 {
@@ -82,7 +73,7 @@ readcondition_init(void)
     g_waitset = dds_create_waitset(g_participant);
     CU_ASSERT_FATAL(g_waitset > 0);
 
-    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_topic_name("ddsc_readcondition_test", name, 100), NULL, NULL);
+    g_topic = dds_create_topic(g_participant, &Space_Type1_desc, create_unique_topic_name("ddsc_readcondition_test", name, 100), NULL, NULL);
     CU_ASSERT_FATAL(g_topic > 0);
 
     /* Create a reader that keeps last sample of all instances. */
@@ -224,22 +215,21 @@ CU_Test(ddsc_readcondition_create, deleted_reader, .init=readcondition_init, .fi
     dds_entity_t cond;
     dds_delete(g_reader);
     cond = dds_create_readcondition(g_reader, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(cond), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(cond, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_readcondition_create, invalid_readers) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t rdr), ddsc_readcondition_create, invalid_readers, .init=readcondition_init, .fini=readcondition_fini)
 {
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_entity_t cond;
 
     cond = dds_create_readcondition(rdr, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(cond), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(cond, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -252,7 +242,7 @@ CU_Theory((dds_entity_t *rdr), ddsc_readcondition_create, non_readers, .init=rea
     uint32_t mask = DDS_ANY_SAMPLE_STATE | DDS_ANY_VIEW_STATE | DDS_ANY_INSTANCE_STATE;
     dds_entity_t cond;
     cond = dds_create_readcondition(*rdr, mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(cond), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(cond, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -276,7 +266,7 @@ CU_Test(ddsc_readcondition_get_mask, deleted, .init=readcondition_init, .fini=re
     dds_delete(condition);
     mask = 0;
     ret = dds_get_mask(condition, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -288,26 +278,25 @@ CU_Test(ddsc_readcondition_get_mask, null, .init=readcondition_init, .fini=readc
     dds_return_t ret;
     condition = dds_create_readcondition(g_reader, mask);
     CU_ASSERT_FATAL(condition > 0);
-    OS_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
     ret = dds_get_mask(condition, NULL);
-    OS_WARNING_MSVC_ON(6387);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    DDSRT_WARNING_MSVC_ON(6387);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
     dds_delete(condition);
 }
 /*************************************************************************************************/
 
 /*************************************************************************************************/
 CU_TheoryDataPoints(ddsc_readcondition_get_mask, invalid_conditions) = {
-        CU_DataPoints(dds_entity_t, -2, -1, 0, 1, 100, INT_MAX, INT_MIN),
+        CU_DataPoints(dds_entity_t, -2, -1, 0, INT_MAX, INT_MIN),
 };
 CU_Theory((dds_entity_t cond), ddsc_readcondition_get_mask, invalid_conditions, .init=readcondition_init, .fini=readcondition_fini)
 {
-    dds_entity_t exp = DDS_RETCODE_BAD_PARAMETER * -1;
     dds_return_t ret;
     uint32_t mask;
 
     ret = dds_get_mask(cond, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), dds_err_nr(exp));
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -320,7 +309,7 @@ CU_Theory((dds_entity_t *cond), ddsc_readcondition_get_mask, non_conditions, .in
     dds_return_t ret;
     uint32_t mask;
     ret = dds_get_mask(*cond, &mask);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -341,7 +330,7 @@ CU_Theory((uint32_t ss, uint32_t vs, uint32_t is), ddsc_readcondition_get_mask, 
     CU_ASSERT_FATAL(condition > 0);
 
     ret = dds_get_mask(condition, &maskOut);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
     CU_ASSERT_EQUAL_FATAL(maskIn, maskOut);
 
     dds_delete(condition);
@@ -903,7 +892,7 @@ CU_Test(ddsc_readcondition_read, already_deleted, .init=readcondition_init, .fin
 
     /* Try to read with a deleted condition. */
     ret = dds_read(condition, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -1459,7 +1448,7 @@ CU_Test(ddsc_readcondition_take, already_deleted, .init=readcondition_init, .fin
 
     /* Try to take with a deleted condition. */
     ret = dds_take(condition, g_samples, g_info, MAX_SAMPLES, MAX_SAMPLES);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 

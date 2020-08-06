@@ -9,11 +9,12 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
-#include "ddsc/dds.h"
-#include "os/os.h"
-#include "RoundTrip.h"
-#include "CUnit/Test.h"
-#include "CUnit/Theory.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/misc.h"
+#include "dds/ddsrt/process.h"
+#include "dds/ddsrt/threads.h"
+
+#include "test_common.h"
 
 /**************************************************************************************************
  *
@@ -34,21 +35,11 @@ char g_topicRtmAddressName[MAX_NAME_SIZE];
 char g_topicRtmDataTypeName[MAX_NAME_SIZE];
 char g_nameBuffer[MAX_NAME_SIZE];
 
-static char*
-create_topic_name(const char *prefix, char *name, size_t size)
-{
-    /* Get semi random g_topic name. */
-    os_procId pid = os_getpid();
-    uintmax_t tid = os_threadIdToInteger(os_threadIdSelf());
-    (void) snprintf(name, size, "%s_pid%"PRIprocId"_tid%"PRIuMAX"", prefix, pid, tid);
-    return name;
-}
-
 static void
 ddsc_topic_init(void)
 {
-    create_topic_name("ddsc_topic_test_rtm_address",  g_topicRtmAddressName,  MAX_NAME_SIZE);
-    create_topic_name("ddsc_topic_test_rtm_datatype", g_topicRtmDataTypeName, MAX_NAME_SIZE);
+    create_unique_topic_name("ddsc_topic_test_rtm_address",  g_topicRtmAddressName,  MAX_NAME_SIZE);
+    create_unique_topic_name("ddsc_topic_test_rtm_datatype", g_topicRtmDataTypeName, MAX_NAME_SIZE);
 
     g_participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     CU_ASSERT_FATAL(g_participant > 0);
@@ -102,11 +93,11 @@ CU_Test(ddsc_topic_create, invalid_qos, .init=ddsc_topic_init, .fini=ddsc_topic_
 {
     dds_entity_t topic;
     dds_qos_t *qos = dds_create_qos();
-    OS_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
-    dds_qset_lifespan(qos, DDS_SECS(-1));
-    OS_WARNING_MSVC_OFF(28020);
+    DDSRT_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
+    dds_qset_resource_limits(qos, 1, 1, 2);
+    DDSRT_WARNING_MSVC_OFF(28020);
     topic = dds_create_topic(g_participant, &RoundTripModule_DataType_desc, "inconsistent", qos, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_INCONSISTENT_POLICY);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_INCONSISTENT_POLICY);
     dds_delete_qos(qos);
 }
 /*************************************************************************************************/
@@ -116,7 +107,7 @@ CU_Test(ddsc_topic_create, non_participants, .init=ddsc_topic_init, .fini=ddsc_t
 {
     dds_entity_t topic;
     topic = dds_create_topic(g_topicRtmDataType, &RoundTripModule_DataType_desc, "non_participant", NULL, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -128,8 +119,12 @@ CU_Test(ddsc_topic_create, duplicate, .init=ddsc_topic_init, .fini=ddsc_topic_fi
     /* Creating the same topic should succeed.  */
     topic = dds_create_topic(g_participant, &RoundTripModule_DataType_desc, g_topicRtmDataTypeName, NULL, NULL);
     CU_ASSERT_FATAL(topic > 0);
+    CU_ASSERT_FATAL(topic != g_topicRtmDataType);
     ret = dds_delete(topic);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
+    /* Old topic entity should remain in existence */
+    ret = dds_get_parent(g_topicRtmDataType);
+    CU_ASSERT(ret > 0);
 }
 /*************************************************************************************************/
 
@@ -139,7 +134,7 @@ CU_Test(ddsc_topic_create, same_name, .init=ddsc_topic_init, .fini=ddsc_topic_fi
     dds_entity_t topic;
     /* Creating the different topic with same name should fail.  */
     topic = dds_create_topic(g_participant, &RoundTripModule_Address_desc, g_topicRtmDataTypeName, NULL, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_PRECONDITION_NOT_MET);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_PRECONDITION_NOT_MET);
 }
 /*************************************************************************************************/
 
@@ -164,10 +159,10 @@ CU_Test(ddsc_topic_create, recreate, .init=ddsc_topic_init, .fini=ddsc_topic_fin
 CU_Test(ddsc_topic_create, desc_null, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 {
     dds_entity_t topic;
-    OS_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
     topic = dds_create_topic (g_participant, NULL, "desc_null", NULL, NULL);
-    OS_WARNING_MSVC_ON(6387);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_BAD_PARAMETER);
+    DDSRT_WARNING_MSVC_ON(6387);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -175,13 +170,13 @@ CU_Test(ddsc_topic_create, desc_null, .init=ddsc_topic_init, .fini=ddsc_topic_fi
 
 
 CU_TheoryDataPoints(ddsc_topic_create, invalid_names) = {
-        CU_DataPoints(char *, NULL, "", "mi-dle", "-start", "end-", "1st", "Thus$", "pl+s", "t(4)"),
+        CU_DataPoints(char *, NULL, "", "mi-dle", "-start", "end-", "1st", "Thus$", "pl+s", "t(4)", "DCPSmytopic"),
 };
 CU_Theory((char *name), ddsc_topic_create, invalid_names, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 {
     dds_entity_t topic;
     topic = dds_create_topic(g_participant, &RoundTripModule_DataType_desc, name, NULL, NULL);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -199,7 +194,7 @@ CU_Test(ddsc_topic_find, valid, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
     dds_return_t ret;
 
     topic = dds_find_topic(g_participant, g_topicRtmDataTypeName);
-    CU_ASSERT_EQUAL_FATAL(topic, g_topicRtmDataType);
+    CU_ASSERT_NOT_EQUAL_FATAL(topic, g_topicRtmDataType);
 
     ret = dds_delete(topic);
     CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_OK);
@@ -211,7 +206,7 @@ CU_Test(ddsc_topic_find, non_participants, .init=ddsc_topic_init, .fini=ddsc_top
 {
     dds_entity_t topic;
     topic = dds_find_topic(g_topicRtmDataType, "non_participant");
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -219,10 +214,10 @@ CU_Test(ddsc_topic_find, non_participants, .init=ddsc_topic_init, .fini=ddsc_top
 CU_Test(ddsc_topic_find, null, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 {
     dds_entity_t topic;
-    OS_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(6387); /* Disable SAL warning on intentional misuse of the API */
     topic = dds_find_topic(g_participant, NULL);
-    OS_WARNING_MSVC_ON(6387);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_BAD_PARAMETER);
+    DDSRT_WARNING_MSVC_ON(6387);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -231,7 +226,7 @@ CU_Test(ddsc_topic_find, unknown, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 {
     dds_entity_t topic;
     topic = dds_find_topic(g_participant, "unknown");
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_PRECONDITION_NOT_MET);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_PRECONDITION_NOT_MET);
 }
 /*************************************************************************************************/
 
@@ -241,7 +236,7 @@ CU_Test(ddsc_topic_find, deleted, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
     dds_entity_t topic;
     dds_delete(g_topicRtmDataType);
     topic = dds_find_topic(g_participant, g_topicRtmDataTypeName);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(topic), DDS_RETCODE_PRECONDITION_NOT_MET);
+    CU_ASSERT_EQUAL_FATAL(topic, DDS_RETCODE_PRECONDITION_NOT_MET);
 }
 /*************************************************************************************************/
 
@@ -287,7 +282,7 @@ CU_Test(ddsc_topic_get_name, non_topic, .init=ddsc_topic_init, .fini=ddsc_topic_
     char name[MAX_NAME_SIZE];
     dds_return_t ret;
     ret = dds_get_name(g_participant, name, MAX_NAME_SIZE);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -301,7 +296,7 @@ CU_Theory((char *name, size_t size), ddsc_topic_get_name, invalid_params, .init=
     dds_return_t ret;
     CU_ASSERT_FATAL((name != g_nameBuffer) || (size != MAX_NAME_SIZE));
     ret = dds_get_name(g_topicRtmDataType, name, size);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -312,7 +307,7 @@ CU_Test(ddsc_topic_get_name, deleted, .init=ddsc_topic_init, .fini=ddsc_topic_fi
     dds_return_t ret;
     dds_delete(g_topicRtmDataType);
     ret = dds_get_name(g_topicRtmDataType, name, MAX_NAME_SIZE);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -360,7 +355,7 @@ CU_Test(ddsc_topic_get_type_name, non_topic, .init=ddsc_topic_init, .fini=ddsc_t
     char name[MAX_NAME_SIZE];
     dds_return_t ret;
     ret = dds_get_type_name(g_participant, name, MAX_NAME_SIZE);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 /*************************************************************************************************/
 
@@ -374,7 +369,7 @@ CU_Theory((char *name, size_t size), ddsc_topic_get_type_name, invalid_params, .
     dds_return_t ret;
     CU_ASSERT_FATAL((name != g_nameBuffer) || (size != MAX_NAME_SIZE));
     ret = dds_get_type_name(g_topicRtmDataType, name, size);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -385,7 +380,7 @@ CU_Test(ddsc_topic_get_type_name, deleted, .init=ddsc_topic_init, .fini=ddsc_top
     dds_return_t ret;
     dds_delete(g_topicRtmDataType);
     ret = dds_get_type_name(g_topicRtmDataType, name, MAX_NAME_SIZE);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -403,7 +398,7 @@ CU_Test(ddsc_topic_set_qos, valid, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
     /* Latency is the only one allowed to change. */
     dds_qset_latency_budget(g_qos, DDS_SECS(1));
     ret = dds_set_qos(g_topicRtmDataType, g_qos);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_UNSUPPORTED);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_UNSUPPORTED);
 }
 /*************************************************************************************************/
 
@@ -411,11 +406,11 @@ CU_Test(ddsc_topic_set_qos, valid, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 CU_Test(ddsc_topic_set_qos, inconsistent, .init=ddsc_topic_init, .fini=ddsc_topic_fini)
 {
     dds_return_t ret;
-    OS_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
+    DDSRT_WARNING_MSVC_OFF(28020); /* Disable SAL warning on intentional misuse of the API */
     dds_qset_lifespan(g_qos, DDS_SECS(-1));
-    OS_WARNING_MSVC_ON(28020);
+    DDSRT_WARNING_MSVC_ON(28020);
     ret = dds_set_qos(g_topicRtmDataType, g_qos);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_INCONSISTENT_POLICY);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_BAD_PARAMETER);
 }
 /*************************************************************************************************/
 
@@ -425,6 +420,6 @@ CU_Test(ddsc_topic_set_qos, immutable, .init=ddsc_topic_init, .fini=ddsc_topic_f
     dds_return_t ret;
     dds_qset_destination_order(g_qos, DDS_DESTINATIONORDER_BY_SOURCE_TIMESTAMP); /* Immutable */
     ret = dds_set_qos(g_topicRtmDataType, g_qos);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(ret), DDS_RETCODE_IMMUTABLE_POLICY);
+    CU_ASSERT_EQUAL_FATAL(ret, DDS_RETCODE_IMMUTABLE_POLICY);
 }
 /*************************************************************************************************/

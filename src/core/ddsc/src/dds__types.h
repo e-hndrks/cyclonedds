@@ -14,17 +14,17 @@
 
 /* DDS internal type definitions */
 
-#include "os/os.h"
-#include "ddsc/dds.h"
-#include "ddsi/q_rtps.h"
-#include "util/ut_avl.h"
-#include "util/ut_handleserver.h"
+#include "dds/dds.h"
+#include "dds/ddsrt/sync.h"
+#include "dds/ddsi/q_rtps.h"
+#include "dds/ddsi/ddsi_domaingv.h"
+#include "dds/ddsrt/avl.h"
+#include "dds/ddsi/ddsi_builtin_topic_if.h"
+#include "dds__handles.h"
 
 #if defined (__cplusplus)
 extern "C" {
 #endif
-
-typedef _Return_type_success_(return == DDS_RETCODE_OK) int32_t dds__retcode_t;
 
 struct dds_domain;
 struct dds_entity;
@@ -34,19 +34,19 @@ struct dds_writer;
 struct dds_publisher;
 struct dds_subscriber;
 struct dds_topic;
+struct dds_ktopic;
 struct dds_readcond;
 struct dds_guardcond;
 struct dds_statuscond;
 
 struct ddsi_sertopic;
-struct rhc;
+struct ddsi_rhc;
 
-/* Internal entity status flags */
-
-#define DDS_INTERNAL_STATUS_MASK     (0xFF000000u)
-
-#define DDS_WAITSET_TRIGGER_STATUS   (0x01000000u)
-#define DDS_DELETING_STATUS          (0x02000000u)
+typedef uint16_t status_mask_t;
+typedef ddsrt_atomic_uint32_t status_and_enabled_t;
+#define SAM_STATUS_MASK        0xffffu
+#define SAM_ENABLED_MASK   0xffff0000u
+#define SAM_ENABLED_SHIFT          16
 
 /* This can be used when polling for various states.
  * Obviously, it is encouraged to use condition variables and such. But
@@ -91,100 +91,193 @@ struct dds_listener {
 
 /* Entity flag values */
 
-#define DDS_ENTITY_ENABLED      0x0001u
-#define DDS_ENTITY_IMPLICIT     0x0002u
+#define DDS_ENTITY_ENABLED      ((uint32_t) 0x1) /* DDS "enabled" state */
+#define DDS_ENTITY_IMPLICIT     ((uint32_t) 0x2) /* implicit ones get deleted when the last child is deleted */
 
-typedef struct dds_domain
-{
-  ut_avlNode_t m_node;
-  dds_domainid_t m_id;
-  ut_avlTree_t m_topics;
-  uint32_t m_refc;
-}
-dds_domain;
-
+struct dds_domain;
 struct dds_entity;
+
 typedef struct dds_entity_deriver {
-    /* Close can be used to terminate (blocking) actions on a entity before actually deleting it. */
-    dds_return_t (*close)(struct dds_entity *e);
-    /* Delete is used to actually free the entity. */
-    dds_return_t (*delete)(struct dds_entity *e);
-    dds_return_t (*set_qos)(struct dds_entity *e, const dds_qos_t *qos, bool enabled);
-    dds_return_t (*validate_status)(uint32_t mask);
-    dds_return_t (*get_instance_hdl)(struct dds_entity *e, dds_instance_handle_t *i);
+  /* Pending close can be used to terminate (blocking) actions on a entity before actually deleting it. */
+  void (*interrupt) (struct dds_entity *e) ddsrt_nonnull_all;
+  /* Close can be used to do ... */
+  void (*close) (struct dds_entity *e) ddsrt_nonnull_all;
+  /* Delete is used to actually free the entity. */
+  dds_return_t (*delete) (struct dds_entity *e) ddsrt_nonnull_all;
+  dds_return_t (*set_qos) (struct dds_entity *e, const dds_qos_t *qos, bool enabled) ddsrt_nonnull_all;
+  dds_return_t (*validate_status) (uint32_t mask);
+  struct dds_statistics * (*create_statistics) (const struct dds_entity *e);
+  void (*refresh_statistics) (const struct dds_entity *e, struct dds_statistics *s);
+} dds_entity_deriver;
+
+struct dds_waitset;
+typedef void (*dds_entity_callback_t) (struct dds_waitset *observer, dds_entity_t observed, uint32_t status);
+typedef bool (*dds_entity_attach_callback_t) (struct dds_waitset *observer, struct dds_entity *observed, void *attach_arg);
+typedef void (*dds_entity_delete_callback_t) (struct dds_waitset *observer, dds_entity_t observed);
+
+typedef struct dds_entity_observer {
+  dds_entity_callback_t m_cb;
+  dds_entity_delete_callback_t m_delete_cb;
+  struct dds_waitset *m_observer;
+  struct dds_entity_observer *m_next;
+} dds_entity_observer;
+
+typedef struct dds_entity {
+  struct dds_handle_link m_hdllink; /* handle is constant, cnt_flags private to dds_handle.c */
+  dds_entity_kind_t m_kind;         /* constant */
+  struct dds_entity *m_next;        /* [m_mutex] */
+  struct dds_entity *m_parent;      /* constant */
+  ddsrt_avl_node_t m_avlnode_child; /* [m_mutex of m_parent] */
+  ddsrt_avl_tree_t m_children;      /* [m_mutex] tree on m_iid using m_avlnode_child */
+  struct dds_domain *m_domain;      /* constant */
+  dds_qos_t *m_qos;                 /* [m_mutex]; null for topics (they rely on correpsonding "ktopic") (+waitset,domain,&c.) */
+  ddsi_guid_t m_guid;               /* unique (if not 0) and constant; FIXME: set during creation, but possibly after becoming visible */
+  dds_instance_handle_t m_iid;      /* unique for all time, constant; FIXME: like GUID */
+  uint32_t m_flags;                 /* [m_mutex] */
+
+  /* Allowed:
+     - locking parent->...->m_mutex while holding m_mutex
+     - locking topic::m_mutex while holding {publisher,subscriber}::m_mutex
+       (no hierarchical relationship there)
+     - locking topic::m_mutex while holding {reader,writer}::m_mutex
+     - locking observers_lock while holding m_mutex
+     - locking waitset::wait_lock
+   */
+  ddsrt_mutex_t m_mutex;
+  ddsrt_cond_t m_cond;
+
+  union {
+    status_and_enabled_t m_status_and_mask; /* for most entities */
+    ddsrt_atomic_uint32_t m_trigger;        /* for conditions & waitsets */
+  } m_status;
+
+  ddsrt_mutex_t m_observers_lock;   /* locking parent->...->m_observers_lock while holding it is allowed */
+  ddsrt_cond_t m_observers_cond;
+  dds_listener_t m_listener;        /* [m_observers_lock] */
+  uint32_t m_cb_count;              /* [m_observers_lock] */
+  uint32_t m_cb_pending_count;      /* [m_observers_lock] */
+  dds_entity_observer *m_observers; /* [m_observers_lock] */
+} dds_entity;
+
+extern const ddsrt_avl_treedef_t dds_topictree_def;
+extern const ddsrt_avl_treedef_t dds_entity_children_td;
+
+extern const struct dds_entity_deriver dds_entity_deriver_topic;
+extern const struct dds_entity_deriver dds_entity_deriver_participant;
+extern const struct dds_entity_deriver dds_entity_deriver_reader;
+extern const struct dds_entity_deriver dds_entity_deriver_writer;
+extern const struct dds_entity_deriver dds_entity_deriver_subscriber;
+extern const struct dds_entity_deriver dds_entity_deriver_publisher;
+extern const struct dds_entity_deriver dds_entity_deriver_readcondition;
+extern const struct dds_entity_deriver dds_entity_deriver_guardcondition;
+extern const struct dds_entity_deriver dds_entity_deriver_waitset;
+extern const struct dds_entity_deriver dds_entity_deriver_domain;
+extern const struct dds_entity_deriver dds_entity_deriver_cyclonedds;
+extern const struct dds_entity_deriver *dds_entity_deriver_table[];
+
+void dds_entity_deriver_dummy_interrupt (struct dds_entity *e);
+void dds_entity_deriver_dummy_close (struct dds_entity *e);
+dds_return_t dds_entity_deriver_dummy_delete (struct dds_entity *e);
+dds_return_t dds_entity_deriver_dummy_set_qos (struct dds_entity *e, const dds_qos_t *qos, bool enabled);
+dds_return_t dds_entity_deriver_dummy_validate_status (uint32_t mask);
+struct dds_statistics *dds_entity_deriver_dummy_create_statistics (const struct dds_entity *e);
+void dds_entity_deriver_dummy_refresh_statistics (const struct dds_entity *e, struct dds_statistics *s);
+
+inline void dds_entity_deriver_interrupt (struct dds_entity *e) {
+  (dds_entity_deriver_table[e->m_kind]->interrupt) (e);
 }
-dds_entity_deriver;
-
-typedef void (*dds_entity_callback)(dds_entity_t observer, dds_entity_t observed, uint32_t status);
-
-typedef struct dds_entity_observer
-{
-    dds_entity_callback m_cb;
-    dds_entity_t m_observer;
-    struct dds_entity_observer *m_next;
+inline void dds_entity_deriver_close (struct dds_entity *e) {
+  (dds_entity_deriver_table[e->m_kind]->close) (e);
 }
-dds_entity_observer;
-
-typedef struct dds_entity
-{
-  ut_handle_t m_hdl;
-  dds_entity_deriver m_deriver;
-  uint32_t m_refc;
-  struct dds_entity * m_next;
-  struct dds_entity * m_parent;
-  struct dds_entity * m_children;
-  struct dds_entity * m_participant;
-  struct dds_domain * m_domain;
-  dds_qos_t * m_qos;
-  dds_domainid_t m_domainid;
-  nn_guid_t m_guid;
-  uint32_t m_flags;
-  os_mutex m_mutex;
-  os_cond m_cond;
-
-  os_mutex m_observers_lock;
-  os_cond m_observers_cond;
-  dds_listener_t m_listener;
-  uint32_t m_trigger;
-  uint32_t m_status_enable;
-  uint32_t m_cb_count;
-  dds_entity_observer *m_observers;
-
-  struct ut_handlelink *m_hdllink;
+inline dds_return_t dds_entity_deriver_delete (struct dds_entity *e) {
+  return dds_entity_deriver_table[e->m_kind]->delete (e);
 }
-dds_entity;
+inline dds_return_t dds_entity_deriver_set_qos (struct dds_entity *e, const dds_qos_t *qos, bool enabled) {
+  return dds_entity_deriver_table[e->m_kind]->set_qos (e, qos, enabled);
+}
+inline dds_return_t dds_entity_deriver_validate_status (struct dds_entity *e, uint32_t mask) {
+  return dds_entity_deriver_table[e->m_kind]->validate_status (mask);
+}
+inline bool dds_entity_supports_set_qos (struct dds_entity *e) {
+  return dds_entity_deriver_table[e->m_kind]->set_qos != dds_entity_deriver_dummy_set_qos;
+}
+inline bool dds_entity_supports_validate_status (struct dds_entity *e) {
+  return dds_entity_deriver_table[e->m_kind]->validate_status != dds_entity_deriver_dummy_validate_status;
+}
+inline struct dds_statistics *dds_entity_deriver_create_statistics (const struct dds_entity *e) {
+  return dds_entity_deriver_table[e->m_kind]->create_statistics (e);
+}
+inline void dds_entity_deriver_refresh_statistics (const struct dds_entity *e, struct dds_statistics *s) {
+  dds_entity_deriver_table[e->m_kind]->refresh_statistics (e, s);
+}
 
-extern const ut_avlTreedef_t dds_topictree_def;
-
-typedef struct dds_subscriber
-{
+typedef struct dds_cyclonedds_entity {
   struct dds_entity m_entity;
-}
-dds_subscriber;
 
-typedef struct dds_publisher
-{
-  struct dds_entity m_entity;
-}
-dds_publisher;
+  ddsrt_mutex_t m_mutex;
+  ddsrt_cond_t m_cond;
+  ddsrt_avl_tree_t m_domains;
+  uint32_t threadmon_count;
+  struct ddsi_threadmon *threadmon;
+} dds_cyclonedds_entity;
 
-typedef struct dds_participant
-{
+typedef struct dds_domain {
   struct dds_entity m_entity;
-  struct dds_entity * m_dur_reader;
-  struct dds_entity * m_dur_writer;
+
+  ddsrt_avl_node_t m_node; /* for dds_global.m_domains */
+  dds_domainid_t m_id;
+  struct cfgst *cfgst;
+
+  struct ddsi_sertopic *builtin_participant_topic;
+  struct ddsi_sertopic *builtin_reader_topic;
+  struct ddsi_sertopic *builtin_writer_topic;
+
+  struct local_orphan_writer *builtintopic_writer_participant;
+  struct local_orphan_writer *builtintopic_writer_publications;
+  struct local_orphan_writer *builtintopic_writer_subscriptions;
+
+  struct ddsi_builtin_topic_interface btif;
+  struct ddsi_domaingv gv;
+} dds_domain;
+
+typedef struct dds_subscriber {
+  struct dds_entity m_entity;
+} dds_subscriber;
+
+typedef struct dds_publisher {
+  struct dds_entity m_entity;
+} dds_publisher;
+
+typedef struct dds_ktopic {
+  /* name -> <type_name, QoS> mapping for topics, part of the participant
+     and protected by the participant's lock (including the actual QoS
+     setting)
+
+     defer_set_qos is used to implement an intentionally unfair single-writer/
+     multiple-reader lock using the participant's lock & cond var: set_qos
+     "write-locks" it, create_reader and create_writer "read-lock" it. */
+  ddsrt_avl_node_t pp_ktopics_avlnode;
+  uint32_t refc;
+  uint32_t defer_set_qos; /* set_qos must wait for this to be 0 */
+  dds_qos_t *qos;
+  char *name; /* [constant] */
+  char *type_name; /* [constant] */
+} dds_ktopic;
+
+typedef struct dds_participant {
+  struct dds_entity m_entity;
   dds_entity_t m_builtin_subscriber;
-}
-dds_participant;
+  ddsrt_avl_tree_t m_ktopics; /* [m_entity.m_mutex] */
+} dds_participant;
 
-typedef struct dds_reader
-{
+typedef struct dds_reader {
   struct dds_entity m_entity;
-  const struct dds_topic * m_topic;
-  struct reader * m_rd;
+  struct dds_topic *m_topic; /* refc'd, constant, lock(rd) -> lock(tp) allowed */
+  struct dds_rhc *m_rhc; /* aliases m_rd->rhc with a wider interface, FIXME: but m_rd owns it for resource management */
+  struct reader *m_rd;
   bool m_data_on_readers;
   bool m_loan_out;
-  void * m_loan;
+  void *m_loan;
   uint32_t m_loan_size;
 
   /* Status metrics */
@@ -195,16 +288,15 @@ typedef struct dds_reader
   dds_requested_incompatible_qos_status_t m_requested_incompatible_qos_status;
   dds_sample_lost_status_t m_sample_lost_status;
   dds_subscription_matched_status_t m_subscription_matched_status;
-}
-dds_reader;
+} dds_reader;
 
-typedef struct dds_writer
-{
+typedef struct dds_writer {
   struct dds_entity m_entity;
-  const struct dds_topic * m_topic;
-  struct nn_xpack * m_xp;
-  struct writer * m_wr;
+  struct dds_topic *m_topic; /* refc'd, constant, lock(wr) -> lock(tp) allowed */
+  struct nn_xpack *m_xp;
+  struct writer *m_wr;
   struct whc *m_whc; /* FIXME: ownership still with underlying DDSI writer (cos of DDSI built-in writers )*/
+  bool whc_batch; /* FIXME: channels + latency budget */
 
   /* Status metrics */
 
@@ -212,86 +304,60 @@ typedef struct dds_writer
   dds_offered_deadline_missed_status_t m_offered_deadline_missed_status;
   dds_offered_incompatible_qos_status_t m_offered_incompatible_qos_status;
   dds_publication_matched_status_t m_publication_matched_status;
-}
-dds_writer;
+} dds_writer;
 
-#ifndef DDS_TOPIC_INTERN_FILTER_FN_DEFINED
-#define DDS_TOPIC_INTERN_FILTER_FN_DEFINED
-typedef bool (*dds_topic_intern_filter_fn) (const void * sample, void *ctx);
-#endif
-
-typedef struct dds_topic
-{
+typedef struct dds_topic {
   struct dds_entity m_entity;
-  struct ddsi_sertopic * m_stopic;
+  struct ddsi_sertopic *m_stopic;
+  struct dds_ktopic *m_ktopic; /* refc'd, constant */
 
-  dds_topic_intern_filter_fn filter_fn;
-  void * filter_ctx;
+  dds_topic_filter_arg_fn filter_fn;
+  void *filter_ctx;
 
   /* Status metrics */
 
   dds_inconsistent_topic_status_t m_inconsistent_topic_status;
-}
-dds_topic;
+} dds_topic;
 
 typedef uint32_t dds_querycond_mask_t;
 
-typedef struct dds_readcond
-{
+typedef struct dds_readcond {
   dds_entity m_entity;
-  struct rhc * m_rhc;
   uint32_t m_qminv;
   uint32_t m_sample_states;
   uint32_t m_view_states;
   uint32_t m_instance_states;
-  nn_guid_t m_rd_guid;
-  struct dds_readcond * m_next;
-  struct
-  {
-      dds_querycondition_filter_fn m_filter;
-      dds_querycond_mask_t m_qcmask; /* condition mask in RHC*/
+  struct dds_readcond *m_next;
+  struct {
+    dds_querycondition_filter_fn m_filter;
+    dds_querycond_mask_t m_qcmask; /* condition mask in RHC*/
   } m_query;
-}
-dds_readcond;
+} dds_readcond;
 
-typedef struct dds_guardcond
-{
+typedef struct dds_guardcond {
   dds_entity m_entity;
-}
-dds_guardcond;
+} dds_guardcond;
 
-typedef struct dds_attachment
-{
-    dds_entity  *entity;
-    dds_attach_t arg;
-    struct dds_attachment* next;
-}
-dds_attachment;
+typedef struct dds_attachment {
+  dds_entity *entity;
+  dds_entity_t handle;
+  dds_attach_t arg;
+} dds_attachment;
 
-typedef struct dds_waitset
-{
+typedef struct dds_waitset {
   dds_entity m_entity;
-  dds_attachment *observed;
-  dds_attachment *triggered;
-}
-dds_waitset;
 
-/* Globals */
+  /* Need a lock other than m_entity.m_mutex because the locking order an entity lock may not be
+     acquired while holding an ancestor's lock, but a waitset must be capable of triggering on
+     events on its parent */
+  ddsrt_mutex_t wait_lock;
+  ddsrt_cond_t wait_cond;
+  size_t nentities;         /* [wait_lock] */
+  size_t ntriggered;        /* [wait_lock] */
+  dds_attachment *entities; /* [wait_lock] 0 .. ntriggered are triggred, ntriggred .. nentities are not */
+} dds_waitset;
 
-typedef struct dds_globals
-{
-  dds_domainid_t m_default_domain;
-  int32_t m_init_count;
-  void (*m_dur_reader) (struct dds_reader * reader, struct rhc * rhc);
-  int (*m_dur_wait) (struct dds_reader * reader, dds_duration_t timeout);
-  void (*m_dur_init) (void);
-  void (*m_dur_fini) (void);
-  ut_avlTree_t m_domains;
-  os_mutex m_mutex;
-}
-dds_globals;
-
-DDS_EXPORT extern dds_globals dds_global;
+DDS_EXPORT extern dds_cyclonedds_entity dds_global;
 
 #if defined (__cplusplus)
 }

@@ -14,10 +14,18 @@
 
 #include "dds__entity.h"
 
-_Must_inspect_result_ dds_guardcond*
+#if defined (__cplusplus)
+extern "C" {
+#endif
+
+dds_guardcond*
 dds_create_guardcond(
-        _In_ dds_participant *pp);
+        dds_participant *pp);
 
 DEFINE_ENTITY_LOCK_UNLOCK(inline, dds_guardcond, DDS_KIND_COND_GUARD)
+
+#if defined (__cplusplus)
+}
+#endif
 
 #endif

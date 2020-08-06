@@ -10,40 +10,44 @@
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include "os/os.h"
-#include "ddsi/ddsi_tran.h"
-#include "ddsi/q_config.h"
-#include "ddsi/q_log.h"
 
-static ddsi_tran_factory_t ddsi_tran_factories = NULL;
+#include "dds/ddsrt/heap.h"
+#include "dds/ddsrt/ifaddrs.h"
+#include "dds/ddsi/ddsi_tran.h"
+#include "dds/ddsi/ddsi_ipaddr.h"
+#include "dds/ddsi/q_config.h"
+#include "dds/ddsi/q_log.h"
+#include "dds/ddsi/ddsi_domaingv.h"
 
-extern inline uint32_t ddsi_conn_type (ddsi_tran_conn_t conn);
-extern inline uint32_t ddsi_conn_port (ddsi_tran_conn_t conn);
-extern inline ddsi_tran_listener_t ddsi_factory_create_listener (ddsi_tran_factory_t factory, int port, ddsi_tran_qos_t qos);
-extern inline bool ddsi_factory_supports (ddsi_tran_factory_t factory, int32_t kind);
-extern inline os_socket ddsi_conn_handle (ddsi_tran_conn_t conn);
+extern inline uint32_t ddsi_conn_type (const struct ddsi_tran_conn *conn);
+extern inline uint32_t ddsi_conn_port (const struct ddsi_tran_conn *conn);
+extern inline dds_return_t ddsi_factory_create_listener (ddsi_tran_listener_t *listener, ddsi_tran_factory_t factory, uint32_t port, const struct ddsi_tran_qos *qos);
+extern inline bool ddsi_factory_supports (const struct ddsi_tran_factory *factory, int32_t kind);
+extern inline int ddsi_is_valid_port (const struct ddsi_tran_factory *factory, uint32_t port);
+extern inline uint32_t ddsi_receive_buffer_size (const struct ddsi_tran_factory *factory);
+extern inline ddsrt_socket_t ddsi_conn_handle (ddsi_tran_conn_t conn);
 extern inline int ddsi_conn_locator (ddsi_tran_conn_t conn, nn_locator_t * loc);
-extern inline os_socket ddsi_tran_handle (ddsi_tran_base_t base);
-extern inline ddsi_tran_conn_t ddsi_factory_create_conn (ddsi_tran_factory_t factory, uint32_t port, ddsi_tran_qos_t qos);
-extern inline int ddsi_tran_locator (ddsi_tran_base_t base, nn_locator_t * loc);
+extern inline ddsrt_socket_t ddsi_tran_handle (ddsi_tran_base_t base);
+extern inline dds_return_t ddsi_factory_create_conn (ddsi_tran_conn_t *conn, ddsi_tran_factory_t factory, uint32_t port, const struct ddsi_tran_qos *qos);
 extern inline int ddsi_listener_locator (ddsi_tran_listener_t listener, nn_locator_t * loc);
 extern inline int ddsi_listener_listen (ddsi_tran_listener_t listener);
 extern inline ddsi_tran_conn_t ddsi_listener_accept (ddsi_tran_listener_t listener);
 extern inline ssize_t ddsi_conn_read (ddsi_tran_conn_t conn, unsigned char * buf, size_t len, bool allow_spurious, nn_locator_t *srcloc);
-extern inline ssize_t ddsi_conn_write (ddsi_tran_conn_t conn, const nn_locator_t *dst, size_t niov, const os_iovec_t *iov, uint32_t flags);
+extern inline ssize_t ddsi_conn_write (ddsi_tran_conn_t conn, const nn_locator_t *dst, size_t niov, const ddsrt_iovec_t *iov, uint32_t flags);
 
-void ddsi_factory_add (ddsi_tran_factory_t factory)
+void ddsi_factory_add (struct ddsi_domaingv *gv, ddsi_tran_factory_t factory)
 {
-  factory->m_factory = ddsi_tran_factories;
-  ddsi_tran_factories = factory;
+  factory->m_factory = gv->ddsi_tran_factories;
+  gv->ddsi_tran_factories = factory;
 }
 
-ddsi_tran_factory_t ddsi_factory_find (const char * type)
+ddsi_tran_factory_t ddsi_factory_find (const struct ddsi_domaingv *gv, const char *type)
 {
   /* FIXME: should speed up */
-  ddsi_tran_factory_t factory = ddsi_tran_factories;
+  ddsi_tran_factory_t factory = gv->ddsi_tran_factories;
 
   while (factory)
   {
@@ -57,23 +61,23 @@ ddsi_tran_factory_t ddsi_factory_find (const char * type)
   return factory;
 }
 
-void ddsi_tran_factories_fini (void)
+void ddsi_tran_factories_fini (struct ddsi_domaingv *gv)
 {
   ddsi_tran_factory_t factory;
-  while ((factory = ddsi_tran_factories) != NULL)
+  while ((factory = gv->ddsi_tran_factories) != NULL)
   {
     /* Keep the factory in the list for the duration of "factory_free" so that
        conversion of locator kind to factory remains possible. */
     ddsi_tran_factory_t next = factory->m_factory;
     ddsi_factory_free (factory);
-    ddsi_tran_factories = next;
+    gv->ddsi_tran_factories = next;
   }
 }
 
-static ddsi_tran_factory_t ddsi_factory_find_with_len (const char * type, size_t len)
+static ddsi_tran_factory_t ddsi_factory_find_with_len (const struct ddsi_domaingv *gv, const char *type, size_t len)
 {
   /* FIXME: should speed up */
-  ddsi_tran_factory_t factory = ddsi_tran_factories;
+  ddsi_tran_factory_t factory = gv->ddsi_tran_factories;
 
   while (factory)
   {
@@ -87,12 +91,13 @@ static ddsi_tran_factory_t ddsi_factory_find_with_len (const char * type, size_t
   return factory;
 }
 
-ddsi_tran_factory_t ddsi_factory_find_supported_kind (int32_t kind)
+ddsrt_attribute_no_sanitize (("thread"))
+ddsi_tran_factory_t ddsi_factory_find_supported_kind (const struct ddsi_domaingv *gv, int32_t kind)
 {
   /* FIXME: MUST speed up */
   ddsi_tran_factory_t factory;
-  for (factory = ddsi_tran_factories; factory; factory = factory->m_factory) {
-    if (factory->m_supports_fn(kind)) {
+  for (factory = gv->ddsi_tran_factories; factory; factory = factory->m_factory) {
+    if (factory->m_supports_fn(factory, kind)) {
       return factory;
     }
   }
@@ -103,7 +108,7 @@ void ddsi_factory_free (ddsi_tran_factory_t factory)
 {
   if (factory && factory->m_free_fn)
   {
-    (factory->m_free_fn) ();
+    (factory->m_free_fn) (factory);
   }
 }
 
@@ -115,22 +120,21 @@ void ddsi_conn_free (ddsi_tran_conn_t conn)
     {
       conn->m_closed = true;
       /* FIXME: rethink the socket waitset & the deleting of entries; the biggest issue is TCP handling that can open & close sockets at will and yet expects the waitset to wake up at the apprioriate times.  (This pretty much works with the select-based version, but not the kqueue-based one.)  TCP code can also have connections without a socket ...  Calling sockWaitsetRemove here (where there shouldn't be any knowledge of it) at least ensures that it is removed in time and that there can't be aliasing of connections and sockets.   */
-      if (ddsi_conn_handle (conn) != OS_INVALID_SOCKET)
+      if (ddsi_conn_handle (conn) != DDSRT_INVALID_SOCKET)
       {
-        unsigned i;
-        for (i = 0; i < gv.n_recv_threads; i++)
+        for (uint32_t i = 0; i < conn->m_base.gv->n_recv_threads; i++)
         {
-          if (!gv.recv_threads[i].ts)
-            assert (!gv.rtps_keepgoing);
+          if (!conn->m_base.gv->recv_threads[i].ts)
+            assert (!ddsrt_atomic_ld32 (&conn->m_base.gv->rtps_keepgoing));
           else
           {
-            switch (gv.recv_threads[i].arg.mode)
+            switch (conn->m_base.gv->recv_threads[i].arg.mode)
             {
               case RTM_MANY:
-                os_sockWaitsetRemove (gv.recv_threads[i].arg.u.many.ws, conn);
+                os_sockWaitsetRemove (conn->m_base.gv->recv_threads[i].arg.u.many.ws, conn);
                 break;
               case RTM_SINGLE:
-                if (gv.recv_threads[i].arg.u.single.conn == conn)
+                if (conn->m_base.gv->recv_threads[i].arg.u.single.conn == conn)
                   abort();
                 break;
             }
@@ -142,7 +146,7 @@ void ddsi_conn_free (ddsi_tran_conn_t conn)
         (conn->m_factory->m_close_conn_fn) (conn);
       }
     }
-    if (os_atomic_dec32_ov (&conn->m_count) == 1)
+    if (ddsrt_atomic_dec32_ov (&conn->m_count) == 1)
     {
       (conn->m_factory->m_release_conn_fn) (conn);
     }
@@ -151,22 +155,22 @@ void ddsi_conn_free (ddsi_tran_conn_t conn)
 
 void ddsi_conn_add_ref (ddsi_tran_conn_t conn)
 {
-  os_atomic_inc32 (&conn->m_count);
+  ddsrt_atomic_inc32 (&conn->m_count);
 }
 
-void ddsi_factory_conn_init (ddsi_tran_factory_t factory, ddsi_tran_conn_t conn)
+void ddsi_factory_conn_init (const struct ddsi_tran_factory *factory, ddsi_tran_conn_t conn)
 {
-  os_atomic_st32 (&conn->m_count, 1);
+  ddsrt_atomic_st32 (&conn->m_count, 1);
   conn->m_connless = factory->m_connless;
   conn->m_stream = factory->m_stream;
-  conn->m_factory = factory;
+  conn->m_factory = (struct ddsi_tran_factory *) factory;
+  conn->m_base.gv = factory->gv;
 }
 
 void ddsi_conn_disable_multiplexing (ddsi_tran_conn_t conn)
 {
-  if (conn->m_disable_multiplexing_fn) {
+  if (conn->m_disable_multiplexing_fn)
     (conn->m_disable_multiplexing_fn) (conn);
-  }
 }
 
 bool ddsi_conn_peer_locator (ddsi_tran_conn_t conn, nn_locator_t * loc)
@@ -179,11 +183,6 @@ bool ddsi_conn_peer_locator (ddsi_tran_conn_t conn, nn_locator_t * loc)
   return false;
 }
 
-void ddsi_tran_free_qos (ddsi_tran_qos_t qos)
-{
-  os_free (qos);
-}
-
 int ddsi_conn_join_mc (ddsi_tran_conn_t conn, const nn_locator_t *srcloc, const nn_locator_t *mcloc, const struct nn_interface *interf)
 {
   return conn->m_factory->m_join_mc_fn (conn, srcloc, mcloc, interf);
@@ -192,14 +191,6 @@ int ddsi_conn_join_mc (ddsi_tran_conn_t conn, const nn_locator_t *srcloc, const 
 int ddsi_conn_leave_mc (ddsi_tran_conn_t conn, const nn_locator_t *srcloc, const nn_locator_t *mcloc, const struct nn_interface *interf)
 {
   return conn->m_factory->m_leave_mc_fn (conn, srcloc, mcloc, interf);
-}
-
-ddsi_tran_qos_t ddsi_tran_create_qos (void)
-{
-  ddsi_tran_qos_t qos;
-  qos = (ddsi_tran_qos_t) os_malloc (sizeof (*qos));
-  memset (qos, 0, sizeof (*qos));
-  return qos;
 }
 
 void ddsi_tran_free (ddsi_tran_base_t base)
@@ -234,25 +225,29 @@ void ddsi_listener_free (ddsi_tran_listener_t listener)
   }
 }
 
-int ddsi_is_mcaddr (const nn_locator_t *loc)
+int ddsi_is_mcaddr (const struct ddsi_domaingv *gv, const nn_locator_t *loc)
 {
-  ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind (loc->kind);
+  ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind (gv, loc->kind);
   return tran ? tran->m_is_mcaddr_fn (tran, loc) : 0;
 }
 
-int ddsi_is_ssm_mcaddr (const nn_locator_t *loc)
+int ddsi_is_ssm_mcaddr (const struct ddsi_domaingv *gv, const nn_locator_t *loc)
 {
-  ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind(loc->kind);
-  return tran ? tran->m_is_ssm_mcaddr_fn (tran, loc) : 0;
+  ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind(gv, loc->kind);
+  if (tran && tran->m_is_ssm_mcaddr_fn != 0)
+    return tran->m_is_ssm_mcaddr_fn (tran, loc);
+  return 0;
 }
 
-enum ddsi_nearby_address_result ddsi_is_nearby_address (const nn_locator_t *loc, size_t ninterf, const struct nn_interface interf[])
+enum ddsi_nearby_address_result ddsi_is_nearby_address (const nn_locator_t *loc, const nn_locator_t *ownloc, size_t ninterf, const struct nn_interface interf[])
 {
-  ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind(loc->kind);
-  return tran ? tran->m_is_nearby_address_fn (tran, loc, ninterf, interf) : DNAR_DISTANT;
+  if (loc->tran != ownloc->tran || loc->kind != ownloc->kind)
+    return DNAR_DISTANT;
+  else
+    return ownloc->tran->m_is_nearby_address_fn (loc, ownloc, ninterf, interf);
 }
 
-enum ddsi_locator_from_string_result ddsi_locator_from_string (nn_locator_t *loc, const char *str)
+enum ddsi_locator_from_string_result ddsi_locator_from_string (const struct ddsi_domaingv *gv, nn_locator_t *loc, const char *str, ddsi_tran_factory_t default_factory)
 {
   const char *sep = strchr(str, '/');
   ddsi_tran_factory_t tran;
@@ -263,12 +258,12 @@ enum ddsi_locator_from_string_result ddsi_locator_from_string (nn_locator_t *loc
     while (cur-- > str)
       if (!isalnum((unsigned char)*cur) && *cur != '_')
         return AFSR_INVALID;
-    tran = ddsi_factory_find_with_len(str, (size_t)(sep - str));
+    tran = ddsi_factory_find_with_len(gv, str, (size_t)(sep - str));
     if (tran == NULL)
       return AFSR_UNKNOWN;
   } else {
     /* FIXME: am I happy with defaulting it like this? */
-    tran = gv.m_factory;
+    tran = default_factory;
   }
   return tran->m_locator_from_string_fn (tran, loc, sep ? sep + 1 : str);
 }
@@ -276,31 +271,69 @@ enum ddsi_locator_from_string_result ddsi_locator_from_string (nn_locator_t *loc
 char *ddsi_locator_to_string (char *dst, size_t sizeof_dst, const nn_locator_t *loc)
 {
   /* FIXME: should add a "factory" for INVALID locators */
-  if (loc->kind != NN_LOCATOR_KIND_INVALID) {
-    ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind(loc->kind);
-    int pos = snprintf (dst, sizeof_dst, "%s/", tran->m_typename);
+  if (loc->kind == NN_LOCATOR_KIND_INVALID) {
+    (void) snprintf (dst, sizeof_dst, "invalid/0:0");
+  } else if (loc->tran != NULL) {
+    int pos = snprintf (dst, sizeof_dst, "%s/", loc->tran->m_typename);
     if (0 < pos && (size_t)pos < sizeof_dst)
-      (void) tran->m_locator_to_string_fn (tran, dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 1);
+      (void) loc->tran->m_locator_to_string_fn (dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 1);
   } else {
-    snprintf (dst, sizeof_dst, "invalid/0:0");
+    /* Because IPv4 and IPv6 addresses are so common we special-case and print them in the usual form
+       even if they didn't get mapped to a transport.  To indicate that this mapping never took place
+       the kind is still printed as a number, not as (udp|tcp)6? */
+    switch (loc->kind)
+    {
+      case NN_LOCATOR_KIND_TCPv4:
+      case NN_LOCATOR_KIND_TCPv6:
+      case NN_LOCATOR_KIND_UDPv4:
+      case NN_LOCATOR_KIND_UDPv6: {
+        int pos = snprintf (dst, sizeof_dst, "%"PRId32"/", loc->kind);
+        if (0 < pos && (size_t)pos < sizeof_dst)
+          (void) ddsi_ipaddr_to_string (dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 1);
+        break;
+      }
+      default: {
+        const unsigned char * const x = loc->address;
+        (void) snprintf (dst, sizeof_dst, "%"PRId32"/[%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x]:%"PRIu32,
+                         loc->kind, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11], x[12], x[13], x[14], x[15], loc->port);
+        break;
+      }
+    }
   }
   return dst;
 }
 
 char *ddsi_locator_to_string_no_port (char *dst, size_t sizeof_dst, const nn_locator_t *loc)
 {
-  if (loc->kind != NN_LOCATOR_KIND_INVALID) {
-    ddsi_tran_factory_t tran = ddsi_factory_find_supported_kind(loc->kind);
-    int pos = snprintf (dst, sizeof_dst, "%s/", tran->m_typename);
+  if (loc->kind == NN_LOCATOR_KIND_INVALID) {
+    (void) snprintf (dst, sizeof_dst, "invalid/0");
+  } else if (loc->tran != NULL) {
+    int pos = snprintf (dst, sizeof_dst, "%s/", loc->tran->m_typename);
     if (0 < pos && (size_t)pos < sizeof_dst)
-      (void) tran->m_locator_to_string_fn (tran, dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 0);
+      (void) loc->tran->m_locator_to_string_fn (dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 0);
   } else {
-    snprintf (dst, sizeof_dst, "invalid/0");
+    switch (loc->kind)
+    {
+      case NN_LOCATOR_KIND_TCPv4:
+      case NN_LOCATOR_KIND_TCPv6:
+      case NN_LOCATOR_KIND_UDPv4:
+      case NN_LOCATOR_KIND_UDPv6: {
+        int pos = snprintf (dst, sizeof_dst, "%"PRId32"/", loc->kind);
+        if (0 < pos && (size_t)pos < sizeof_dst)
+          (void) ddsi_ipaddr_to_string (dst + (size_t)pos, sizeof_dst - (size_t)pos, loc, 0);
+        break;
+      }
+      default: {
+        const unsigned char * const x = loc->address;
+        (void) snprintf (dst, sizeof_dst, "%"PRId32"/[%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x]",
+                         loc->kind, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11], x[12], x[13], x[14], x[15]);
+      }
+    }
   }
   return dst;
 }
 
-int ddsi_enumerate_interfaces (ddsi_tran_factory_t factory, os_ifaddrs_t **interfs)
+int ddsi_enumerate_interfaces (ddsi_tran_factory_t factory, enum transport_selector transport_selector, ddsrt_ifaddrs_t **interfs)
 {
-  return factory->m_enumerate_interfaces_fn (factory, interfs);
+  return factory->m_enumerate_interfaces_fn (factory, transport_selector, interfs);
 }

@@ -10,12 +10,12 @@
  * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
  */
 #include <stdio.h>
-#include "CUnit/Test.h"
+
 #include "CUnit/Theory.h"
-#include "ddsc/dds.h"
+#include "dds/dds.h"
 #include "RoundTrip.h"
 #include "Space.h"
-#include "os/os.h"
+#include "dds/ddsrt/misc.h"
 
 /* Tests in this file only concern themselves with very basic api tests of
    dds_write and dds_write_ts */
@@ -65,7 +65,7 @@ CU_Test(ddsc_write, basic, .init = setup, .fini = teardown)
     dds_return_t status;
 
     status = dds_write(writer, &data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_OK);
 }
 
 CU_Test(ddsc_write, null_writer, .init = setup, .fini = teardown)
@@ -73,10 +73,10 @@ CU_Test(ddsc_write, null_writer, .init = setup, .fini = teardown)
     dds_return_t status;
 
     /* Disable warning related to improper API usage by passing incompatible parameter. */
-    OS_WARNING_MSVC_OFF(28020);
+    DDSRT_WARNING_MSVC_OFF(28020);
     status = dds_write(0, &data);
-    OS_WARNING_MSVC_ON(28020);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_BAD_PARAMETER);
+    DDSRT_WARNING_MSVC_ON(28020);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_write, bad_writer, .init = setup, .fini = teardown)
@@ -84,7 +84,7 @@ CU_Test(ddsc_write, bad_writer, .init = setup, .fini = teardown)
     dds_return_t status;
 
     status = dds_write(publisher, &data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_ILLEGAL_OPERATION);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_ILLEGAL_OPERATION);
 }
 
 CU_Test(ddsc_write, closed_writer, .init = setup, .fini = teardown)
@@ -92,10 +92,10 @@ CU_Test(ddsc_write, closed_writer, .init = setup, .fini = teardown)
     dds_return_t status;
 
     status = dds_delete(writer);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_OK);
     status = dds_write(writer, &data);
     writer = 0;
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_ALREADY_DELETED);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_write, null_sample, .init = setup, .fini = teardown)
@@ -103,11 +103,11 @@ CU_Test(ddsc_write, null_sample, .init = setup, .fini = teardown)
     dds_return_t status;
 
     /* Disable warning related to improper API usage by passing NULL to a non-NULL parameter. */
-    OS_WARNING_MSVC_OFF(6387);
+    DDSRT_WARNING_MSVC_OFF(6387);
     status = dds_write(writer, NULL);
-    OS_WARNING_MSVC_ON(6387);
+    DDSRT_WARNING_MSVC_ON(6387);
 
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_write_ts, basic, .init = setup, .fini = teardown)
@@ -115,7 +115,7 @@ CU_Test(ddsc_write_ts, basic, .init = setup, .fini = teardown)
     dds_return_t status;
 
     status = dds_write_ts(writer, &data, dds_time());
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_OK);
 }
 
 CU_Test(ddsc_write_ts, bad_timestamp, .init = setup, .fini = teardown)
@@ -123,7 +123,7 @@ CU_Test(ddsc_write_ts, bad_timestamp, .init = setup, .fini = teardown)
     dds_return_t status;
 
     status = dds_write_ts(writer, &data, -1);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_BAD_PARAMETER);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_BAD_PARAMETER);
 }
 
 CU_Test(ddsc_write, simpletypes)
@@ -152,7 +152,7 @@ CU_Test(ddsc_write, simpletypes)
     CU_ASSERT_FATAL(wri > 0);
 
     status = dds_write(wri, &st_data);
-    CU_ASSERT_EQUAL_FATAL(dds_err_nr(status), DDS_RETCODE_OK);
+    CU_ASSERT_EQUAL_FATAL(status, DDS_RETCODE_OK);
 
     dds_delete(wri);
     dds_delete(top);

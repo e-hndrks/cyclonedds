@@ -12,11 +12,21 @@
 #ifndef _DDS_PUBLISHER_H_
 #define _DDS_PUBLISHER_H_
 
-#include "ddsc/dds.h"
+#include "dds/dds.h"
+#include "dds__entity.h"
 
 #if defined (__cplusplus)
 extern "C" {
 #endif
+
+DEFINE_ENTITY_LOCK_UNLOCK(inline, dds_publisher, DDS_KIND_PUBLISHER)
+
+dds_entity_t
+dds__create_publisher_l(
+  struct dds_participant *participant, /* entity-lock must be held */
+  bool implicit,
+  const dds_qos_t *qos,
+  const dds_listener_t *listener);
 
 dds_return_t dds_publisher_begin_coherent (dds_entity_t e);
 dds_return_t dds_publisher_end_coherent (dds_entity_t e);
