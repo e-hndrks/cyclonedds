@@ -111,7 +111,7 @@ int main (int argc, char **argv)
 
   /* Fill the sample payload with data */
   ThroughputModule_DataType_Base* ptr = (ThroughputModule_DataType_Base*)sample;
-  ptr->payloadsize = payloadSize - sizeof(ThroughputModule_DataType_Base);
+  ptr->payloadsize = payloadSize - (uint32_t) sizeof(ThroughputModule_DataType_Base);
   ptr->count = 0;
   memset((char*)sample + offsetof(ThroughputModule_DataType_16, payload), 'a', ptr->payloadsize);
 
@@ -339,7 +339,11 @@ static void start_writing(
 
       if (burstCount < burstSize)
       {
-        status = dds_write (writer, sample);
+        void *loaned_sample;
+
+        status = dds_loan_sample(writer, &loaned_sample);
+        memcpy(loaned_sample, sample, payloadSize);
+        status = dds_write (writer, loaned_sample);
         if (status == DDS_RETCODE_TIMEOUT)
         {
           timedOut = true;

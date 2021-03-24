@@ -31,6 +31,58 @@
 #include "dds/ddsrt/shm_sync.h"
 #endif
 
+struct AlignIceOryxChunk_t {
+  iceoryx_header_t header;
+  uint64_t worst_case_member;
+};
+
+/* Assume worst-case 8 byte alignment for sample following the iceoryx header. */
+#define DETERMINE_ICEORYX_CHUNK_SIZE(sample_size) (uint32_t) (sizeof(iceoryx_header_t) + 8 - (sizeof(iceoryx_header_t) % 8) + sample_size)
+#define SHIFT_PAST_ICEORYX_HEADER(chunk) (void *)(((char *)chunk) + sizeof(iceoryx_header_t) + 8 - (sizeof(iceoryx_header_t) % 8))
+#define SHIFT_BACK_ICEORYX_HEADER(chunk) (void *)(((char *)chunk) - sizeof(iceoryx_header_t) - 8 + (sizeof(iceoryx_header_t) % 8))
+
+dds_return_t dds_loan_sample(dds_entity_t writer, void** sample)
+{
+  dds_return_t ret;
+  dds_writer *wr;
+
+#ifdef DDS_HAS_SHM
+  if (!sample)
+    return DDS_RETCODE_BAD_PARAMETER;
+
+  if ((ret = dds_writer_lock (writer, &wr)) != DDS_RETCODE_OK)
+    return ret;
+
+  if (wr->m_entity.m_domain->gv.config.enable_shm &&
+      iox_pub_has_subscribers(wr->m_iox_pub))
+  {
+    iceoryx_header_t *ice_hdr;
+    uint32_t sample_size = wr->m_topic->m_stype->iox_size;
+    uint32_t chunk_size = DETERMINE_ICEORYX_CHUNK_SIZE(sample_size);
+    while (1)
+    {
+      shm_mutex_lock();
+      enum iox_AllocationResult alloc_result = iox_pub_loan_chunk(wr->m_iox_pub, sample, chunk_size);
+      shm_mutex_unlock();
+      if (AllocationResult_SUCCESS == alloc_result)
+        break;
+      // SHM_TODO: Maybe there is a better way to do while unable to allocate.
+      //           BTW, how long I should sleep is also another problem.
+      dds_sleepfor (DDS_MSECS (1));
+    }
+    ice_hdr = (iceoryx_header_t *) *sample;
+    ice_hdr->data_size = sample_size;
+    *sample = SHIFT_PAST_ICEORYX_HEADER(ice_hdr);
+  } else {
+    ret = DDS_RETCODE_UNSUPPORTED;
+  }
+  dds_writer_unlock (wr);
+#else
+  ret = DDS_RETCODE_UNSUPPORTED;
+#endif
+  return ret;
+}
+
 dds_return_t dds_write (dds_entity_t writer, const void *data)
 {
   dds_return_t ret;
@@ -242,31 +294,14 @@ dds_return_t dds_write_impl (dds_writer *wr, const void * data, dds_time_t tstam
     if (wr->m_entity.m_domain->gv.config.enable_shm &&
         iox_pub_has_subscribers(wr->m_iox_pub))
     {
-      uint32_t send_size = ddsi_serdata_iox_size (d);
-      while (1)
-      {
-        shm_mutex_lock();
-        enum iox_AllocationResult alloc_result = iox_pub_loan_chunk(wr->m_iox_pub, (void**)(&d->iox_chunk), (unsigned int)(sizeof(iceoryx_header_t) + send_size));
-        shm_mutex_unlock();
-        if (AllocationResult_SUCCESS == alloc_result)
-          break;
-        // SHM_TODO: Maybe there is a better way to do while unable to allocate.
-        //           BTW, how long I should sleep is also another problem.
-        dds_sleepfor (DDS_MSECS (1));
-      }
-      iceoryx_header_t *ice_hdr = (iceoryx_header_t*)d->iox_chunk;
+      iceoryx_header_t *ice_hdr = SHIFT_BACK_ICEORYX_HEADER(data);
       ice_hdr->guid = ddsi_wr->e.guid;
       ice_hdr->tstamp = tstamp;
-      ice_hdr->data_size = send_size;
       ice_hdr->data_kind = writekey ? SDK_KEY : SDK_DATA;
       ddsi_serdata_get_keyhash(d, &ice_hdr->keyhash, false);
-
-      // SHM_TODO: Is there any way to avoid copy?
-      memcpy (d->iox_chunk + sizeof (iceoryx_header_t), data, send_size);
       shm_mutex_lock();
-      iox_pub_publish_chunk (wr->m_iox_pub, d->iox_chunk);
+      iox_pub_publish_chunk (wr->m_iox_pub, ice_hdr);
       shm_mutex_unlock();
-      d->iox_chunk = NULL;
     }
 #endif
 
